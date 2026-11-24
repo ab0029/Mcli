@@ -1,0 +1,33 @@
+[package]
+name = "mcli"
+version = "0.1.0"
+edition = "2024"
+default-run = "mcli"
+publish = false
+description = "Windows 多 Agent CLI 工作台"
+
+[build-dependencies]
+find-msvc-tools = "0.1.15"
+
+[dependencies]
+alacritty_terminal = "=0.26.0"
+blake3 = "1"
+rusqlite = { version = "0.43", features = ["bundled", "fallible_uint"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[dependencies.rune]
+git = "https://github.com/ab0029/rune"
+rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7"
+default-features = false
+features = ["accessibility", "embedded-fonts", "segmenter-dictionaries"]
+
+# Rune's platform and text patches must be applied by the consuming Cargo project.
+[patch.crates-io]
+accesskit_macos = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }
+accesskit_windows = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }
+parley_engine = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }
+sctk-adwaita = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }
+wgpu-hal = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }
+winit = { git = "https://github.com/ab0029/rune", rev = "b23aa32110efb7f9ef76c69a2b0dd75f2290edb7" }

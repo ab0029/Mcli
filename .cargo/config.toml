@@ -1,0 +1,7 @@
+[target.x86_64-pc-windows-gnu]
+# Keep MinGW's startup objects and unwind runtime matched to the Rust toolchain.
+rustflags = ["-C", "link-self-contained=yes"]
+
+[env]
+# Older MinGW headers hide GetTickCount64 unless the Windows API target is explicit.
+LIBSQLITE3_FLAGS = "-D_WIN32_WINNT=0x0601"

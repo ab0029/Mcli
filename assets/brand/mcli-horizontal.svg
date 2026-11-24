@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="410" height="176" viewBox="0 0 410 176" role="img" aria-labelledby="title">
+  <title id="title">Mcli</title>
+  <!-- The named groups are also used by scripts/export-brand.py. The wordmark
+       is outlined so exported artwork does not depend on an installed font. -->
+  <defs>
+    <linearGradient id="rear" x2=".91" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#007b5d"/><stop offset=".37" stop-color="#003735"/>
+      <stop offset=".65" stop-color="#06483f"/><stop offset="1" stop-color="#013329"/>
+    </linearGradient>
+    <linearGradient id="rear-rim" x2="1" y2=".28">
+      <stop stop-color="#00805e"/><stop offset=".56" stop-color="#17ec82"/>
+      <stop offset=".85" stop-color="#b4ff83"/><stop offset="1" stop-color="#22b96d"/>
+    </linearGradient>
+    <linearGradient id="middle" x2=".86" y2="1">
+      <stop stop-color="#00689b"/><stop offset=".31" stop-color="#033a50"/>
+      <stop offset=".72" stop-color="#06353b"/><stop offset="1" stop-color="#06252b"/>
+    </linearGradient>
+    <linearGradient id="middle-rim" x2="1" y2=".21">
+      <stop stop-color="#008bd0"/><stop offset=".4" stop-color="#00c8be"/>
+      <stop offset=".82" stop-color="#00f7ae"/><stop offset="1" stop-color="#07987b"/>
+    </linearGradient>
+    <linearGradient id="glass" x1=".1" y1="0" x2=".88" y2="1">
+      <stop stop-color="#084da6"/><stop offset=".27" stop-color="#072347"/>
+      <stop offset=".63" stop-color="#050f22"/><stop offset="1" stop-color="#071528"/>
+    </linearGradient>
+    <linearGradient id="glass-rim" x2=".9" y2="1">
+      <stop stop-color="#00d7ff"/><stop offset=".38" stop-color="#0079ff"/>
+      <stop offset=".8" stop-color="#163abf"/><stop offset="1" stop-color="#00c6f2"/>
+    </linearGradient>
+    <linearGradient id="m-blue" x1=".16" y1="0" x2=".78" y2="1">
+      <stop stop-color="#12ceff"/><stop offset=".36" stop-color="#05a9fa"/>
+      <stop offset=".66" stop-color="#087dff"/><stop offset=".91" stop-color="#1751f9"/>
+      <stop offset="1" stop-color="#008ded"/>
+    </linearGradient>
+    <linearGradient id="m-edge" x1="0" y1="0" x2="1" y2=".64">
+      <stop stop-color="#76e6ff"/><stop offset=".35" stop-color="#159dfb"/>
+      <stop offset=".74" stop-color="#1558ff"/><stop offset="1" stop-color="#0ad9ff"/>
+    </linearGradient>
+    <linearGradient id="prompt-green" x2="1" y2="1">
+      <stop stop-color="#35ff79"/><stop offset="1" stop-color="#00df72"/>
+    </linearGradient>
+    <linearGradient id="plate-edge" x2=".85" y2="1">
+      <stop stop-color="#2385ff"/><stop offset=".47" stop-color="#173158"/>
+      <stop offset="1" stop-color="#0955a5"/>
+    </linearGradient>
+    <radialGradient id="plate-fill" cx=".36" cy=".2" r=".92">
+      <stop stop-color="#18355e"/><stop offset=".58" stop-color="#0a182b"/>
+      <stop offset="1" stop-color="#040c17"/>
+    </radialGradient>
+
+    <g id="window-stack">
+      <path d="M66 24V17Q66 2 81 2H164Q180 2 180 18V111Q180 120 172 125L163 131V40Q163 23 147 23Z" fill="url(#rear)"/>
+      <path d="M66 23V17Q66 2 81 2H164Q180 2 180 18V111Q180 120 172 125" fill="none" stroke="url(#rear-rim)" stroke-width="4"/>
+      <path d="M72 14Q73 7 82 7H163Q173 7 176 15" fill="none" stroke="#90ffd2" stroke-opacity=".27" stroke-width="1.5"/>
+      <g fill="#02c995"><circle cx="80" cy="13" r="2.7"/><circle cx="89" cy="13" r="2.7"/><circle cx="98" cy="13" r="2.7"/></g>
+      <path d="M34 47V39Q34 23 50 23H147Q163 23 163 40V126Q163 135 154 140L150 143V67Q150 46 131 46Z" fill="url(#middle)"/>
+      <path d="M34 46V39Q34 23 50 23H147Q163 23 163 40V126Q163 135 154 140" fill="none" stroke="url(#middle-rim)" stroke-width="4"/>
+      <path d="M39 36Q42 29 51 29H146Q154 29 158 36" fill="none" stroke="#72f9de" stroke-opacity=".23" stroke-width="1.6"/>
+      <g fill="#66add4"><circle cx="48" cy="35" r="3"/><circle cx="58" cy="35" r="3"/><circle cx="68" cy="35" r="3"/></g>
+      <path d="M3 91V68Q3 46 25 46H131Q151 46 151 66V89L79 127Z" fill="url(#glass)"/>
+      <path d="M3 91V68Q3 46 25 46H131Q151 46 151 66V149" fill="none" stroke="url(#glass-rim)" stroke-width="4"/>
+      <path d="M8 59Q13 50 27 50H130Q142 50 146 59" fill="none" stroke="#41b8ff" stroke-opacity=".66" stroke-width="2"/>
+      <g fill="#a6d6ff"><circle cx="22" cy="63" r="4.1"/><circle cx="37" cy="63" r="4.1"/><circle cx="52" cy="63" r="4.1"/></g>
+      <path d="M2 89L23 78Q27 76 31 79L80 110L119 80L150 62Q152 61 152 65V154Q152 158 148 160L121 172V113L81 141Q79 142 77 140L35 112V158L3 172Q2 173 2 170Z"
+            fill="url(#m-blue)" stroke="url(#m-edge)" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M4 91V168L8 166V89Z" fill="#3fc9ff" opacity=".33"/>
+      <path d="M149 65V154L145 157V68Z" fill="#37d9ff" opacity=".5"/>
+    </g>
+    <g id="mark">
+      <use xlink:href="#window-stack"/>
+      <path d="M50 142L65 151L50 160" fill="none" stroke="url(#prompt-green)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="69" y="160" width="21" height="5.6" rx="2.2" fill="url(#prompt-green)"/>
+    </g>
+
+    <g id="letters">
+      <path d="M1 75V8Q1 5 4 5H15L40 38L64 5H76Q79 5 79 8V75H64V30L41 61H38L17 31V75Z"/>
+      <path d="M137 25L129 37Q124 33 117 33C107 33 100 39 100 48S106 63 117 63Q124 63 129 58L138 69Q130 77 116 77C97 77 84 65 84 48S98 19 116 19Q128 19 137 25Z"/>
+      <rect x="145" y="2" width="15.5" height="73" rx="1.9"/>
+      <rect x="169" y="23" width="15.5" height="52" rx="1.9"/>
+    </g>
+    <rect id="i-dot" x="169" y="2" width="15.5" height="15.5" rx="3.8"/>
+    <g id="wordmark"><use xlink:href="#letters" fill="#f8fafc"/><use xlink:href="#i-dot" fill="url(#prompt-green)"/></g>
+    <g id="mono-mark">
+      <g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M67 16Q69 4 83 4H163Q178 4 178 20V112"/>
+        <path d="M35 37Q38 25 51 25H146Q161 25 161 41V134"/>
+        <path d="M4 87V66Q4 47 25 47H131Q149 47 149 64"/>
+        <path d="M50 142L65 151L50 160M71 163H89"/>
+      </g>
+      <g fill="currentColor">
+        <circle cx="22" cy="63" r="4"/><circle cx="37" cy="63" r="4"/><circle cx="52" cy="63" r="4"/>
+        <path d="M2 90L26 77L79 111L150 62V157L120 172V113L79 142L35 112V158L2 172Z"/>
+      </g>
+    </g>
+    <rect id="plate" x="2" y="2" width="252" height="252" rx="55" fill="url(#plate-fill)" stroke="url(#plate-edge)" stroke-width="3"/>
+    <g id="app-art"><use xlink:href="#plate"/><use xlink:href="#mark" transform="translate(32 37) scale(1.055)"/></g>
+    <!-- Windows can reduce the large HICON all the way down to a 16 px switcher badge. -->
+    <g id="medium-app">
+      <use xlink:href="#plate"/>
+      <g transform="translate(24 24) scale(1.15)">
+        <use xlink:href="#window-stack"/>
+        <path d="M44 141L62 152L44 164M75 166H99" fill="none" stroke="#39ff81" stroke-width="12" stroke-linejoin="round" stroke-linecap="round"/>
+      </g>
+    </g>
+    <!-- At 16-32 px the rims and terminal prompt occupy whole pixels. -->
+    <g id="small-app">
+      <rect x=".25" y=".25" width="15.5" height="15.5" rx="3.1" fill="url(#plate-fill)" stroke="url(#plate-edge)" stroke-width=".5"/>
+      <path d="M5.2 2.6V2.3Q5.2 1.7 5.9 1.7H13Q14.2 1.7 14.2 3V9.3" fill="none" stroke="#41e889" stroke-width="1"/>
+      <path d="M3.4 4.1V3.9Q3.4 3.1 4.3 3.1H11.8Q13 3.1 13 4.3V10.6" fill="none" stroke="#12d4b9" stroke-width=".95"/>
+      <path d="M1.9 7.6V5.9Q1.9 4.7 3.1 4.7H10.9Q11.8 4.7 11.8 5.8V7.2" fill="#092344" stroke="#359eff" stroke-width=".85"/>
+      <path d="M1.6 7.3L3 6.6L6.9 9.1L12.1 5.7V12.4L10 13.7V9.6L6.9 11.5L3.8 9.5V12.7L1.6 13.8Z" fill="url(#m-blue)"/>
+      <path d="M4.9 11.9L6.6 13L4.9 14.1M7.7 14.1H9.3" fill="none" stroke="#37ff80" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </defs>
+  <use xlink:href="#mark"/>
+  <use xlink:href="#wordmark" transform="translate(207 50) scale(1.08)"/>
+</svg>

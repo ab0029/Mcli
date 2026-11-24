@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="186" height="78" viewBox="0 0 186 78" role="img">
+  <title>Mcli</title>
+  <defs>
+    <linearGradient id="prompt-green" x2="1" y2="1">
+      <stop stop-color="#35ff79" />
+      <stop offset="1" stop-color="#00df72" />
+    </linearGradient>
+    <g id="letters">
+      <path d="M1 75V8Q1 5 4 5H15L40 38L64 5H76Q79 5 79 8V75H64V30L41 61H38L17 31V75Z" />
+      <path d="M137 25L129 37Q124 33 117 33C107 33 100 39 100 48S106 63 117 63Q124 63 129 58L138 69Q130 77 116 77C97 77 84 65 84 48S98 19 116 19Q128 19 137 25Z" />
+      <rect x="145" y="2" width="15.5" height="73" rx="1.9" />
+      <rect x="169" y="23" width="15.5" height="52" rx="1.9" />
+    </g>
+    <rect id="i-dot" x="169" y="2" width="15.5" height="15.5" rx="3.8" />
+    <g id="wordmark">
+      <use xlink:href="#letters" fill="#f8fafc" />
+      <use xlink:href="#i-dot" fill="url(#prompt-green)" />
+    </g>
+  </defs>
+  <use xlink:href="#wordmark" />
+</svg>
