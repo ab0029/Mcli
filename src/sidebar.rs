@@ -1,5 +1,5 @@
 use crate::shell::Foreground;
-use crate::workbench::Filter;
+use crate::workbench::{ContextMenu, Filter};
 use crate::workspace::{Tab, Workspace};
 use rune::{Color, El, Icon, ScrollSpec, TextStyle, Tx, col, el, icon, row, text, tok};
 pub(super) mod icons;
@@ -300,6 +300,57 @@ fn session_row(w: &Workspace, tab: &Tab) -> El {
     )
 }
 
+pub(crate) fn normalize_explorer_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let raw = dir.to_string_lossy();
+    let stripped = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        raw.into_owned()
+    };
+    let mut normalized = stripped.replace('/', r"\");
+    // Keep drive root like `C:\`, strip redundant trailing backslashes elsewhere.
+    while normalized.len() > 3 && normalized.ends_with('\\') {
+        normalized.pop();
+    }
+    std::path::PathBuf::from(normalized)
+}
+
+pub(crate) fn open_in_explorer(w: &mut Workspace, dir: &std::path::Path) {
+    let target = normalize_explorer_path(dir);
+    if !target.is_dir() {
+        w.history.error = format!("目录不存在：{}", target.display());
+        return;
+    }
+    #[cfg(all(windows, not(test)))]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let op: Vec<u16> = "open\0".encode_utf16().collect();
+        let mut file: Vec<u16> = target.as_os_str().encode_wide().collect();
+        file.push(0);
+        let rc = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                op.as_ptr(),
+                file.as_ptr(),
+                null(),
+                null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        if rc <= 32 {
+            w.history.error = format!("无法打开资源管理器（错误码 {rc}）：{}", target.display());
+        }
+    }
+    #[cfg(not(all(windows, not(test))))]
+    let _ = w;
+}
+
 pub(super) fn view(w: &Workspace) -> El {
     let width = w.layout.width(w.cell);
     let rail = row().h_full().child(navigation::rail(w));
@@ -332,6 +383,8 @@ pub(super) fn view(w: &Workspace) -> El {
         visible_groups += 1;
         let path = first.directory.clone();
         let project = first.project.clone();
+        let menu_dir = path.clone();
+        let menu_anchor = format!("project-{}", first.id.0);
         let open = !w.layout.collapsed_for_search(searching).contains(&project);
         let name = path
             .file_name()
@@ -390,6 +443,14 @@ pub(super) fn view(w: &Workspace) -> El {
                 if !collapsed.remove(&project) {
                     collapsed.insert(project.clone());
                 }
+            })
+            .on_secondary_press_local(move |w: &mut Workspace, _, tx| {
+                tx.instant();
+                w.layout.menu = Some(ContextMenu::Project {
+                    anchor: menu_anchor.clone(),
+                    dir: menu_dir.clone(),
+                    searching,
+                });
             });
         if !open && visible.iter().any(|t| t.unread) {
             title = title.child(unread_dot());

@@ -38,8 +38,11 @@ impl Workspace {
     #[cfg(not(test))]
     pub fn start_history(&mut self) {
         if let (Some(dir), Some(roots)) = (std::env::var_os("LOCALAPPDATA"), Roots::installed()) {
+            let folder = crate::single_instance::data_folder_name();
             self.history.service = Some(Service::start(
-                PathBuf::from(dir).join("Mcli/conversations.sqlite3"),
+                PathBuf::from(dir)
+                    .join(folder)
+                    .join("conversations.sqlite3"),
                 roots,
                 self.wake.clone(),
             ));
@@ -185,6 +188,7 @@ impl Workspace {
         for u in updates {
             match u {
                 Update::RestoredReply(marker, run, key) => {
+                    let mut sound_selected = None;
                     if let Some(t) = self.tabs.iter_mut().find(|t| {
                         t.id.marker() == marker
                             && t.run.as_ref() == Some(&run)
@@ -193,17 +197,30 @@ impl Workspace {
                             && !t.closing
                             && t.ended.is_none()
                     }) {
-                        t.mark_reply(self.active == Some(t.id));
+                        let selected = self.active == Some(t.id);
+                        t.mark_reply(selected);
+                        sound_selected = Some(selected);
                         changed = true;
+                    }
+                    if let Some(selected) = sound_selected {
+                        self.notify_agent_sound(
+                            crate::sound::ReplyNotification::Completed,
+                            selected,
+                        );
                     }
                 }
                 Update::Activity(marker, run, state) => {
+                    let mut notified = None;
                     if let Some(t) = self.tabs.iter_mut().find(|t| {
                         t.id.marker() == marker && t.run.as_ref() == Some(&run) && !t.closing
                     }) {
+                        let selected = Some(t.id) == self.active;
                         changed |= t.meter != state;
                         t.meter = state;
-                        t.observe_reply(Some(t.id) == self.active);
+                        notified = t.observe_reply(selected).map(|kind| (kind, selected));
+                    }
+                    if let Some((kind, selected)) = notified {
+                        self.notify_agent_sound(kind, selected);
                     }
                 }
                 Update::Scanning(scanning) => {
@@ -268,10 +285,14 @@ impl Workspace {
                     tab.phase = phase;
                     tab.preview = preview;
                     tab.prompt_count = count;
-                    tab.observe_reply(Some(tab.id) == self.active);
-                    if Some(tab.id) == self.active && new_count {
+                    let selected = Some(tab.id) == self.active;
+                    let notified = tab.observe_reply(selected);
+                    if selected && new_count {
                         self.history.count = count;
                         self.load_page();
+                    }
+                    if let Some(kind) = notified {
+                        self.notify_agent_sound(kind, selected);
                     }
                 }
                 Update::Page(key, off, generation, items, count)
@@ -301,6 +322,10 @@ impl Workspace {
                         }
                         _ => (),
                     }
+                }
+                Update::LatestReply(tab_id, generation, result) => {
+                    self.on_clawbot_latest_reply(tab_id, generation, result);
+                    changed = true;
                 }
                 Update::Search(key, generation, mut entries, finished, error)
                     if self.history.open

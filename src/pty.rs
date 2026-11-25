@@ -204,14 +204,23 @@ pub(crate) fn terminal_environment(
     }
 }
 
-fn environment(marker: &str, proxy_directory: Option<&Path>) -> Vec<u16> {
+fn environment(
+    marker: &str,
+    proxy_directory: Option<&Path>,
+    proxy_catalog: Option<&Path>,
+) -> Vec<u16> {
     let mut vars = std::env::vars_os().collect();
     terminal_environment(&mut vars, marker, has_persisted_no_color);
     vars.retain(|(k, _)| {
-        !k.eq_ignore_ascii_case("MCLI_STATUS_HELPER") && !k.eq_ignore_ascii_case("MCLI_PROXY_DIR")
+        !k.eq_ignore_ascii_case("MCLI_STATUS_HELPER")
+            && !k.eq_ignore_ascii_case("MCLI_PROXY_DIR")
+            && !k.eq_ignore_ascii_case("MCLI_PROXY_CATALOG")
     });
     if let Some(dir) = proxy_directory {
         vars.push(("MCLI_PROXY_DIR".into(), dir.as_os_str().into()));
+    }
+    if let Some(catalog) = proxy_catalog {
+        vars.push(("MCLI_PROXY_CATALOG".into(), catalog.as_os_str().into()));
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -254,6 +263,7 @@ pub fn spawn(
     lines: u16,
     marker: &str,
     proxy_directory: Option<&Path>,
+    proxy_catalog: Option<&Path>,
 ) -> io::Result<Child> {
     if !cwd.is_dir() {
         return Err(io::Error::other(format!(
@@ -271,7 +281,7 @@ pub fn spawn(
         cmd.push(quoted(arg));
     }
     let mut command_line = wide(&cmd)?;
-    let env = environment(marker, proxy_directory);
+    let env = environment(marker, proxy_directory, proxy_catalog);
     let (console_in, input) = pipe()?;
     let (output, console_out) = pipe()?;
     let console = Console::create(coord(cols, lines), &console_in, &console_out)?;

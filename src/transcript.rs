@@ -585,3 +585,48 @@ pub fn body_at(
         _ => Err(invalid("原文已变更，请重新同步")),
     }
 }
+
+/// Read-only extraction of the latest assistant reply text after the last user prompt.
+/// Handles all four official formats (Codex `task_complete`, agy `PLANNER_RESPONSE`,
+/// Kimi `context.append_message`, and Grok streaming `agent_message_chunk`).
+pub fn latest_reply(roots: &Roots, key: &Key, source: &Path) -> io::Result<Option<String>> {
+    let mut reader = BufReader::new(File::open(roots.path(key, source)?)?);
+    let mut line = Vec::new();
+    let mut last_reply: Option<String> = None;
+    let mut grok_chunks = String::new();
+    let is_grok = key.agent == "grok";
+
+    while next_row(&mut reader, &mut line)? {
+        let Ok(parsed) = parse(key, &line) else {
+            continue;
+        };
+        match parsed {
+            Row::Prompt(_) => {
+                last_reply = None;
+                grok_chunks.clear();
+            }
+            Row::Reply(text) => {
+                if is_grok {
+                    grok_chunks.push_str(&text);
+                } else if !text.trim().is_empty() {
+                    last_reply = Some(text);
+                }
+            }
+            Row::Complete(Some(text)) => {
+                if !text.trim().is_empty() {
+                    last_reply = Some(text);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    if is_grok {
+        let trimmed = grok_chunks.trim();
+        Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
+    } else {
+        Ok(last_reply
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty()))
+    }
+}

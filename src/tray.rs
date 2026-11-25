@@ -6,12 +6,13 @@ use rune::AppHandle;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
@@ -25,6 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_UPDATE_TIP: u32 = WM_APP + 2;
 const TRAY_UID: u32 = 1;
 const CMD_SHOW: u32 = 1001;
 const CMD_QUIT: u32 = 1002;
@@ -34,23 +36,32 @@ struct TrayState {
     icon: HICON,
     owns_icon: bool,
     taskbar_created: u32,
+    tip: Arc<Mutex<String>>,
 }
 
 pub struct Tray {
     hwnd: usize,
+    tip: Arc<Mutex<String>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Tray {
     pub fn start(handle: AppHandle<Workspace>) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel();
+        let default_tip = format!(
+            "{} · 多 Agent 终端工作台",
+            crate::single_instance::app_display_name()
+        );
+        let tip = Arc::new(Mutex::new(default_tip));
+        let tip_clone = tip.clone();
         let thread = thread::Builder::new()
             .name("mcli-tray".into())
-            .spawn(move || run_tray_loop(handle, tx))
+            .spawn(move || run_tray_loop(handle, tip_clone, tx))
             .map_err(|e| format!("无法启动托盘线程：{e}"))?;
         match rx.recv() {
             Ok(Ok(hwnd)) => Ok(Self {
                 hwnd,
+                tip,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => {
@@ -61,6 +72,22 @@ impl Tray {
                 let _ = thread.join();
                 Err("托盘线程提前退出".into())
             }
+        }
+    }
+
+    pub fn set_tooltip(&self, text: &str) {
+        if self.hwnd == 0 {
+            return;
+        }
+        {
+            let mut guard = self.tip.lock().unwrap();
+            if *guard == text {
+                return;
+            }
+            *guard = text.to_owned();
+        }
+        unsafe {
+            PostMessageW(self.hwnd as HWND, WM_UPDATE_TIP, 0, 0);
         }
     }
 }
@@ -82,7 +109,7 @@ fn wide(text: &str) -> Vec<u16> {
     OsStr::new(text).encode_wide().chain(Some(0)).collect()
 }
 
-fn make_notify_data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
+fn make_notify_data(hwnd: HWND, icon: HICON, tip_text: &str) -> NOTIFYICONDATAW {
     let mut data: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = hwnd;
@@ -90,7 +117,7 @@ fn make_notify_data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = WM_TRAY;
     data.hIcon = icon;
-    let tip = wide("Mcli · 多 Agent 终端工作台");
+    let tip = wide(tip_text);
     let copy_len = tip.len().min(data.szTip.len() - 1);
     data.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
     data
@@ -125,7 +152,11 @@ fn load_tray_icon(instance: windows_sys::Win32::Foundation::HMODULE) -> (HICON, 
     }
 }
 
-fn run_tray_loop(handle: AppHandle<Workspace>, ready: mpsc::Sender<Result<usize, String>>) {
+fn run_tray_loop(
+    handle: AppHandle<Workspace>,
+    tip: Arc<Mutex<String>>,
+    ready: mpsc::Sender<Result<usize, String>>,
+) {
     unsafe {
         let instance = GetModuleHandleW(null());
         let class_name = wide("McliTrayWindowClass");
@@ -152,6 +183,7 @@ fn run_tray_loop(handle: AppHandle<Workspace>, ready: mpsc::Sender<Result<usize,
             icon,
             owns_icon,
             taskbar_created,
+            tip,
         });
         let state_ptr = Box::into_raw(state);
 
@@ -178,7 +210,8 @@ fn run_tray_loop(handle: AppHandle<Workspace>, ready: mpsc::Sender<Result<usize,
             return;
         }
 
-        let nid = make_notify_data(hwnd, (*state_ptr).icon);
+        let initial_tip = (*state_ptr).tip.lock().unwrap().clone();
+        let nid = make_notify_data(hwnd, (*state_ptr).icon, &initial_tip);
         if Shell_NotifyIconW(NIM_ADD, &nid) == 0 {
             DestroyWindow(hwnd);
             let _ = ready.send(Err("无法注册系统托盘图标".into()));
@@ -201,18 +234,19 @@ unsafe fn show_context_menu(hwnd: HWND, handle: &AppHandle<Workspace>) {
         if menu.is_null() {
             return;
         }
+        let app_name = crate::single_instance::app_display_name();
         AppendMenuW(
             menu,
             MF_STRING,
             CMD_SHOW as usize,
-            wide("显示 Mcli").as_ptr(),
+            wide(&format!("显示 {app_name}")).as_ptr(),
         );
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(
             menu,
             MF_STRING,
             CMD_QUIT as usize,
-            wide("退出 Mcli").as_ptr(),
+            wide(&format!("退出 {app_name}")).as_ptr(),
         );
 
         let mut pt = POINT { x: 0, y: 0 };
@@ -265,8 +299,15 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 return 0;
             }
+            if msg == WM_UPDATE_TIP {
+                let tip_text = state.tip.lock().unwrap().clone();
+                let nid = make_notify_data(hwnd, state.icon, &tip_text);
+                Shell_NotifyIconW(NIM_MODIFY, &nid);
+                return 0;
+            }
             if state.taskbar_created != 0 && msg == state.taskbar_created {
-                let nid = make_notify_data(hwnd, state.icon);
+                let tip_text = state.tip.lock().unwrap().clone();
+                let nid = make_notify_data(hwnd, state.icon, &tip_text);
                 Shell_NotifyIconW(NIM_ADD, &nid);
                 return 0;
             }
@@ -275,7 +316,7 @@ unsafe extern "system" fn tray_wnd_proc(
         match msg {
             WM_CLOSE => {
                 if !ptr.is_null() {
-                    let nid = make_notify_data(hwnd, (*ptr).icon);
+                    let nid = make_notify_data(hwnd, (*ptr).icon, "");
                     Shell_NotifyIconW(NIM_DELETE, &nid);
                 }
                 DestroyWindow(hwnd);

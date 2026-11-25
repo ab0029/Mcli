@@ -30,6 +30,7 @@ pub enum Command {
     Discover(PathBuf),
     RefreshProjects,
     Text(Key, usize, u64, bool),
+    LatestReply(Key, SessionId, u64),
     History(Option<PathBuf>, usize, u64),
     Refresh,
     Quit,
@@ -44,6 +45,7 @@ pub enum Update {
     Scanning(bool),
     Activity(String, String, Option<&'static str>),
     Text(Key, usize, u64, bool, std::result::Result<String, String>),
+    LatestReply(SessionId, u64, std::result::Result<Option<String>, String>),
     History(Option<PathBuf>, usize, u64, Vec<Summary>, Vec<PathBuf>),
     Error(String),
 }
@@ -983,6 +985,19 @@ impl Worker<'_> {
                     .text(&k, ord)
                     .map_err(|e| format!("原文不可用 · {e}"));
                 (self.notify)(Update::Text(k, ord, generation, copy, text));
+            }
+            Command::LatestReply(k, tab_id, generation) => {
+                for slot in self.live.values_mut() {
+                    if slot.bound.as_ref() == Some(&k) {
+                        slot.requested = true;
+                        slot.sync(&mut self.store, &self.roots, self.notify);
+                    }
+                }
+                let reply = self
+                    .store
+                    .latest_reply(&k)
+                    .map_err(|e| format!("回复提取失败 · {e}"));
+                (self.notify)(Update::LatestReply(tab_id, generation, reply));
             }
             Command::History(p, off, generation) => {
                 let rows = match &p {

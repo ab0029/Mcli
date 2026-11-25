@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod clawbot;
 mod conversation_store;
 mod desktop_info;
 mod discovery;
@@ -12,6 +13,9 @@ mod proxy;
 mod pty;
 mod shell;
 mod sidebar;
+#[cfg(windows)]
+mod single_instance;
+mod sound;
 mod terminal;
 mod terminal_view;
 #[cfg(test)]
@@ -463,7 +467,7 @@ fn workspace_view(w: &Workspace, cx: &mut Cx<Workspace>) -> El {
     }
     let mut terminal_column = col().grow(1.).min_w(0.).h_full();
     if w.layout.show_metrics_bar {
-        terminal_column = terminal_column.child(desktop_info::bar(&w.desktop.metrics));
+        terminal_column = terminal_column.child(desktop_info::bar(w));
     }
     terminal_column = terminal_column.child(right.w_full().min_h(0.));
     let body = row()
@@ -488,12 +492,14 @@ fn workspace_view(w: &Workspace, cx: &mut Cx<Workspace>) -> El {
             w.window_active = active;
             if !active {
                 w.cancel_split();
+                w.layout.menu = None;
                 w.layout.cancel_recording();
                 w.invalidate_input();
             }
         })
         .child(window_frame::titlebar(w, cx))
         .child(body)
+        .children(workbench::menu_overlay(w))
 }
 
 fn app() -> rune::App<Workspace> {
@@ -504,12 +510,15 @@ fn app() -> rune::App<Workspace> {
             {
                 w.desktop.start(w.wake.clone());
                 if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-                    w.enable_restore(&std::path::Path::new(&dir).join("Mcli/workspaces"));
+                    let root = std::path::PathBuf::from(&dir)
+                        .join(crate::single_instance::data_folder_name());
+                    w.enable_restore(&root.join("workspaces"));
                     w.layout = workbench::Layout::new(rune::prefs::Prefs::at(
-                        std::path::PathBuf::from(dir).join("Mcli/preferences.json"),
+                        root.join("preferences.json"),
                     ));
                     w.desktop.set_metrics_enabled(w.layout.show_metrics_bar);
                     w.sync_tray();
+                    w.init_clawbot(root);
                 }
                 w.start_history();
             }
@@ -526,9 +535,21 @@ fn app() -> rune::App<Workspace> {
 }
 
 fn main() {
+    #[cfg(all(windows, not(test)))]
+    let Some(single) = single_instance::SingleInstance::acquire() else {
+        return;
+    };
     #[cfg(windows)]
     rune::set_app_icon_resource(1);
     let app = app().keep_running();
+    #[cfg(all(windows, not(test)))]
+    let _single_guard = {
+        let wake_handle = app.handle();
+        single.listen(move || {
+            wake_handle.open();
+            single_instance::bring_current_process_window_to_front();
+        })
+    };
     #[cfg(all(windows, not(test)))]
     let app = {
         let handle = app.handle();

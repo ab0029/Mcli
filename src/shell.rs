@@ -119,6 +119,7 @@ pub enum Report {
     Foreground(Option<Foreground>),
     Launch(Foreground, String, Option<String>),
     PrepareAgy(String),
+    Proxy(String),
     RestoreStarted,
     RestoreEnded(RestoreEnd),
     StatusQuery(bool),
@@ -330,7 +331,14 @@ impl ShellReports {
                 if let Some((session, name)) = text.split_once('=')
                     && session == marker
                 {
-                    if let Some((agent, rest)) = name.split_once('=') {
+                    if let Some(summary) = name.strip_prefix("proxy=") {
+                        let clean: String = summary
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(256)
+                            .collect();
+                        report(Report::Proxy(clean));
+                    } else if let Some((agent, rest)) = name.split_once('=') {
                         let (run, explicit) = match rest.split_once('=') {
                             Some((r, id)) => (r, Some(id)),
                             None => (rest, None),

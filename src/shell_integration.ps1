@@ -1,4 +1,4 @@
-﻿# Runs once in this interactive session, after normal PowerShell profiles.
+# Runs once in this interactive session, after normal PowerShell profiles.
 function global:__McliReportDirectory($location) {
     if ($location.Provider.Name -eq 'FileSystem') {
         [Console]::Write([string][char]27 + ']9;9;"' + $location.ProviderPath + '"' + [char]7)
@@ -168,6 +168,9 @@ function global:__McliAgentReport($name) {
             $global:__McliAgentPrompt = $function:prompt
             $global:__McliPreviousLaunch = $env:MCLI_LAUNCH_ID
             $run = $global:__McliRun
+            if ($context.GetCommand('__McliAutoProxyForAgent', 'Function')) {
+                try { __McliAutoProxyForAgent $global:__McliAgentName } catch { Write-Debug $_ }
+            }
             if ($context.GetCommand('__McliPinProxy', 'Function')) {
                 try { __McliPinProxy $run } catch { [Console]::Error.WriteLine('未能为本次对话保存代理设置。') }
             }

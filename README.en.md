@@ -11,7 +11,8 @@ Run multiple independent PowerShell sessions in a single window, automatically g
 ## Key Features
 
 - **Native Multi-Session Terminal Workbench**
-  - Groups sessions automatically by the shell's reported filesystem directory, showing session counts and active Git branches (or detached HEAD short SHAs).
+  - Groups sessions automatically by the shell's reported filesystem directory, showing session counts and active Git branches (or detached HEAD short SHAs). Right-click any project header for a dark styled context menu to open the directory in Explorer, launch a new terminal, copy path, or expand/collapse all project groups.
+  - Enforces a single instance per Windows user session, automatically focusing and restoring the existing window (including from the system tray) on relaunch.
   - Preserves each session's unsubmitted draft and up to 3,000 lines of scrollback when switching tabs; background sessions keep running uninterrupted.
   - Supports 16-color, 256-color, and 24-bit truecolor rendering, CJK IME composition, text selection, and clipboard paste for text, screenshots, and files (`Ctrl+V` / `Shift+Insert`).
 - **Zero-Rewrite Support for 4 Agent CLIs**
@@ -20,10 +21,16 @@ Run multiple independent PowerShell sessions in a single window, automatically g
 - **Recent Tasks, Prompt Footprints & Auto-Resume**
   - Read-only discovery of official conversation logs under the current project and its subdirectories, with a floating right-hand drawer to browse, search, and copy full multi-line prompts without resizing the terminal or clearing selection.
   - Saves window layout and per-tab proxy overrides on exit and automatically resumes verified conversation IDs on reopen (with automatic retry up to 3 times on transient launch failure).
-- **Per-Tab Encrypted Proxy Memory**
-  - Tracks per-terminal changes to `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` so two tabs in the same project can use different proxies. Stored locally using Windows DPAPI user-scoped encryption.
-- **Customizable Workbench Settings**
-  - Configure **Minimize to System Tray on Close** (left-click tray icon to restore, right-click menu to show or exit completely), toggle the **Top System Metrics Bar** (CPU / RAM / Network monitor; turning it off reclaims terminal rows and pauses background sampling), and **rebind all global keyboard shortcuts** in Settings.
+- **Multi-Proxy Profiles & Quick Switch (Top Bar + Shell `mp` + Per-Agent Auto Proxy)**
+  - Tracks per-terminal changes to `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` using Windows DPAPI user-scoped encryption.
+  - Manage reusable proxy presets in **Settings -> Proxy Profiles** (port-only shorthand like `10808` expands automatically), set a global default for new shells, or configure per-Agent defaults (`Codex`, `agy`, `Kimi`, `Grok`) that apply right before CLI launch without overwriting manual overrides.
+  - Switch proxies from the styled top-bar pill (idle Agent tabs seamlessly reopen and resume their official conversation ID) or inside PowerShell via `mp <name|index|off|sys>`.
+- **Optional WeChat ClawBot Remote Control (Off by Default)**
+  - Pair your WeChat account via QR code in **Settings** with DPAPI-encrypted local credentials and strict single-user whitelist enforcement (zero async runtime dependencies, pure WinHTTP long-polling).
+  - Supports `/list`, `/use`, `/status`, `/proxy`, `/new`, `/reopen`, `/screen`, `/stop`, `/approve`, `/deny`, `/key`, `/more`, `/ping`, opt-in `/sh`, 3h/2h/1h proactive keepalive reminders, and offline stale-message protection on restart.
+- **Completion Sound Alerts & Customizable Settings**
+  - Plays Windows system notification sounds when an Agent finishes or waits for approval (defaults to background / unfocused / non-selected tabs only, with 1.5s debounce, 3 selectable system sounds + live preview, dynamic DLL loading with zero static `winmm.dll` dependency, and silent fallback on stripped systems).
+  - Configure **Minimize to System Tray on Close**, toggle the **Top System Metrics & Proxy Bar**, and **rebind all global keyboard shortcuts** in Settings.
 
 ---
 
@@ -81,7 +88,8 @@ All state stays strictly on your local machine:
 
 - Window snapshots: `%LOCALAPPDATA%\Mcli\workspaces\`
 - Local prompt index: `%LOCALAPPDATA%\Mcli\conversations.sqlite3`
-- Preferences & shortcuts: `%LOCALAPPDATA%\Mcli\preferences.json`
+- Preferences, proxy profiles & shortcuts: `%LOCALAPPDATA%\Mcli\preferences.json`, `%LOCALAPPDATA%\Mcli\proxy-profiles.json`
+- WeChat ClawBot credentials (only when enabled): `%LOCALAPPDATA%\Mcli\clawbot-auth.bin` (Windows DPAPI encrypted)
 - Official logs: read-only access to vendor directories (`~/.codex`, `~/.gemini/antigravity`, `~/.kimi-code`, `~/.grok`).
 
 ---

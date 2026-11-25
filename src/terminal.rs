@@ -95,6 +95,7 @@ pub struct ShellUpdates {
     pub directory: Option<PathBuf>,
     pub title: Option<String>,
     pub foreground: Option<Option<crate::shell::Foreground>>,
+    pub proxy_summary: Option<String>,
 }
 
 struct RestoreSignals {
@@ -466,7 +467,7 @@ impl Session {
         size: Size,
         wake: Waker,
     ) -> io::Result<Self> {
-        Self::spawn_with_proxy(id, program, args, cwd, size, wake, None)
+        Self::spawn_with_proxy(id, program, args, cwd, size, wake, None, None)
     }
     pub fn spawn_with_proxy(
         id: SessionId,
@@ -476,6 +477,7 @@ impl Session {
         size: Size,
         wake: Waker,
         proxy_directory: Option<&Path>,
+        proxy_catalog: Option<&Path>,
     ) -> io::Result<Self> {
         let stop = Arc::new(pty::stop_event()?);
         let child = pty::spawn(
@@ -486,6 +488,7 @@ impl Session {
             size.lines,
             &id.marker(),
             proxy_directory,
+            proxy_catalog,
         )?;
         let (input, rx) = mpsc::channel();
         let listener = Listener {
@@ -874,6 +877,9 @@ impl Session {
                                         read_events.restore.lock().unwrap().take();
                                         shell.restore_end = Some(end);
                                     }
+                                    crate::shell::Report::Proxy(summary) => {
+                                        shell.proxy_summary = Some(summary);
+                                    }
                                     crate::shell::Report::PrepareAgy(_)
                                     | crate::shell::Report::StatusQuery(_) => unreachable!(),
                                 }
@@ -1114,6 +1120,61 @@ impl Session {
             .unwrap()
             .selection_to_string()
             .filter(|s| !s.is_empty())
+    }
+    /// Extract plain text from the bottom `max_lines` of non-empty terminal content (no ANSI escapes).
+    pub fn screen_snapshot(&self, max_lines: usize) -> String {
+        use alacritty_terminal::term::cell::Flags;
+        let term = self.term.lock().unwrap();
+        let grid = term.grid();
+        let screen_lines = grid.screen_lines() as i32;
+        let history_lines = grid.history_size() as i32;
+        let cols = grid.columns();
+        let want = max_lines.clamp(5, 80);
+        // Always include the entire visible viewport plus up to `want` lines of scrollback,
+        // then trim trailing blank rows below the cursor before taking the bottom `want` lines.
+        let top = -(history_lines.min(want as i32));
+        let mut lines: Vec<String> = Vec::with_capacity((screen_lines - top).max(0) as usize);
+        for row_idx in top..screen_lines {
+            let row = &grid[Line(row_idx)];
+            let mut buf = String::with_capacity(cols);
+            for col_idx in 0..cols {
+                let cell = &row[Column(col_idx)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                buf.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    for &ch in extra {
+                        buf.push(ch);
+                    }
+                }
+            }
+            lines.push(buf.trim_end().to_owned());
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        if lines.len() > want {
+            lines.drain(..lines.len() - want);
+        }
+        while lines.first().is_some_and(String::is_empty) {
+            lines.remove(0);
+        }
+        // Collapse consecutive blank lines to keep mobile screen snapshots concise.
+        let mut compact = Vec::with_capacity(lines.len());
+        let mut prev_blank = false;
+        for line in lines {
+            let blank = line.is_empty();
+            if blank && prev_blank {
+                continue;
+            }
+            prev_blank = blank;
+            compact.push(line);
+        }
+        compact.join("\n")
     }
     pub fn identify_restore(&self) {
         if let Some(signals) = &mut *self.listener.restore.lock().unwrap() {

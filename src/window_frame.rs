@@ -36,10 +36,14 @@ pub fn titlebar(w: &Workspace, cx: &mut Cx<Workspace>) -> El {
             )
             .child(el().w(18.))
             .child(
-                text("多 Agent 终端工作台")
-                    .key("caption-description")
-                    .font(ui_font(16., 460.))
-                    .color(ink(0xd2d7df)),
+                text(if crate::single_instance::is_dev_channel() {
+                    "多 Agent 终端工作台 · DEV"
+                } else {
+                    "多 Agent 终端工作台"
+                })
+                .key("caption-description")
+                .font(ui_font(16., 460.))
+                .color(ink(0xd2d7df)),
             );
     }
     col()

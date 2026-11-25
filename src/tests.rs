@@ -1,4 +1,5 @@
 use super::*;
+mod clawbot;
 mod multiple;
 pub(crate) mod phase_four;
 mod restore_retry;
@@ -579,6 +580,7 @@ fn explicit_close_reclaims_a_shell_that_stays_alive() {
         80,
         24,
         "close-test",
+        None,
         None,
     )
     .unwrap();

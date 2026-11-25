@@ -304,3 +304,74 @@ fn independent_proxies_follow_tabs_history_and_each_retry() {
         }
     }
 }
+
+#[test]
+fn mp_command_and_agent_auto_proxy_work_in_powershell() {
+    let root = phase_four::folder("mp-command-qa");
+    let proxy_dir = root.join("live");
+    fs::create_dir(&proxy_dir).unwrap();
+    fs::write(proxy_dir.join("current"), "").unwrap();
+
+    let mut settings = crate::proxy::ProxySettings::default();
+    settings.upsert_profile("p1", "10808", "localhost").unwrap();
+    settings
+        .upsert_profile("p2", "http://127.0.0.1:7890", "")
+        .unwrap();
+    settings.set_agent_default("codex", Some("p1".into()));
+    let catalog = root.join("proxy-profiles.json");
+    crate::proxy::write_catalog(&catalog, &settings).unwrap();
+
+    let test_script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+{}
+# 1. Agent auto-default applies when user has not manually switched.
+__McliAutoProxyForAgent 'codex'
+if ($env:HTTP_PROXY -cne 'http://127.0.0.1:10808' -or $env:NO_PROXY -cne 'localhost') {{ exit 21 }}
+
+# 2. Manual mp by index overrides and blocks auto-default from clobbering it.
+mp 2
+if ($env:HTTP_PROXY -cne 'http://127.0.0.1:7890' -or $env:HTTPS_PROXY -cne 'http://127.0.0.1:7890' -or $env:ALL_PROXY -cne 'http://127.0.0.1:7890') {{ exit 22 }}
+__McliAutoProxyForAgent 'codex'
+if ($env:HTTP_PROXY -cne 'http://127.0.0.1:7890') {{ exit 23 }}
+
+# 3. mp off clears all three proxy env vars.
+mp off
+if ($null -ne [Environment]::GetEnvironmentVariable('HTTP_PROXY', 'Process') -or
+    $null -ne [Environment]::GetEnvironmentVariable('HTTPS_PROXY', 'Process') -or
+    $null -ne [Environment]::GetEnvironmentVariable('ALL_PROXY', 'Process')) {{ exit 24 }}
+
+# 4. mp sys restores baseline and re-enables agent auto-default.
+mp sys
+if ($env:HTTP_PROXY -cne 'http://127.0.0.1:19999') {{ exit 25 }}
+__McliAutoProxyForAgent 'codex'
+if ($env:HTTP_PROXY -cne 'http://127.0.0.1:10808') {{ exit 26 }}
+"#,
+        include_str!("../shell_proxy.ps1")
+    );
+
+    let out = Command::new(pwsh())
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(&test_script)
+        .env("MCLI_PROXY_DIR", &proxy_dir)
+        .env("MCLI_PROXY_CATALOG", &catalog)
+        .env("MCLI_SESSION_ID", "mcli-test-mp")
+        .env("HTTP_PROXY", "http://127.0.0.1:19999")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
+        .env_remove("NO_PROXY")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "mp test failed (code {:?}): stdout={} stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("McliAgent=mcli-test-mp=proxy=http://127.0.0.1:10808"));
+    assert!(stdout.contains("McliAgent=mcli-test-mp=proxy=http://127.0.0.1:7890"));
+    assert!(stdout.contains("McliAgent=mcli-test-mp=proxy=off"));
+}

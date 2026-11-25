@@ -68,3 +68,27 @@ pub const GROK: Icon = outline(
     "mcli-grok",
     r#"<path d="M19.2 6.8A8.6 8.6 0 1 0 20.4 13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/><path d="M5.4 18.6 18.8 5.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"#,
 );
+pub const GLOBE: Icon = outline(
+    "mcli-globe",
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><ellipse cx="12" cy="12" rx="4.2" ry="9"/></g>"#,
+);
+pub const CHECK: Icon = outline(
+    "mcli-check",
+    r#"<path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>"#,
+);
+pub const TERMINAL: Icon = outline(
+    "mcli-terminal",
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 10 3 2.5-3 2.5M12.5 15h4"/></g>"#,
+);
+pub const COPY: Icon = outline(
+    "mcli-copy",
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></g>"#,
+);
+pub const EXPAND_ALL: Icon = outline(
+    "mcli-expand-all",
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m7 9 5-4.5L17 9M7 15l5 4.5L17 15"/></g>"#,
+);
+pub const COLLAPSE_ALL: Icon = outline(
+    "mcli-collapse-all",
+    r#"<g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m7 5.5 5 4.5 5-4.5M7 18.5 12 14l5 4.5"/></g>"#,
+);

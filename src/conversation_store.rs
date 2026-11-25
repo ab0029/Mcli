@@ -176,6 +176,13 @@ impl Store {
         )?)
     }
 
+    pub fn latest_reply(&self, key: &Key) -> Result<Option<String>> {
+        let Some(path) = self.source(key)? else {
+            return Ok(None);
+        };
+        Ok(transcript::latest_reply(&self.roots, key, &path)?)
+    }
+
     /// Search the official text in small descending batches. The index supplies verified
     /// offsets; the complete text is never duplicated in SQLite.
     pub fn search_batch(

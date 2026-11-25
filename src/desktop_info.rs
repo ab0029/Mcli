@@ -1,4 +1,7 @@
-use rune::{El, TextStyle, Waker, row, text};
+use crate::proxy::SummaryMatch;
+use crate::workbench::ContextMenu;
+use crate::workspace::Workspace;
+use rune::{El, Waker, col, el, icon, row, text};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
@@ -153,31 +156,141 @@ pub struct Metrics {
     net: Option<(u64, u64)>,
 }
 
-pub fn bar(metrics: &Metrics) -> El {
+impl Metrics {
+    pub fn summary(&self) -> Option<String> {
+        if self.cpu.is_none() && self.used.is_none() {
+            return None;
+        }
+        let cpu = self.cpu.map_or_else(|| "--".into(), |p| format!("{p}%"));
+        let mem = self.used.map_or_else(
+            || "--".into(),
+            |b| format!("{:.1} GiB", b as f64 / 1_073_741_824.),
+        );
+        Some(format!("CPU {cpu} · 内存 {mem}"))
+    }
+}
+
+pub fn bar(w: &Workspace) -> El {
+    let metrics = &w.desktop.metrics;
     let cpu = metrics.cpu.map_or_else(|| "--".into(), |p| format!("{p}%"));
     let mem = metrics.used.map_or_else(
         || "--".into(),
         |b| format!("{:.1} GiB", b as f64 / 1_073_741_824.),
     );
-    let net = metrics.net.map_or_else(
-        || "↑ --   ↓ --".into(),
-        |(rx, tx)| format!("↑ {}   ↓ {}", rate(tx), rate(rx)),
+    let (up, down) = metrics.net.map_or_else(
+        || ("--".into(), "--".into()),
+        |(rx, tx)| (rate(tx), rate(rx)),
     );
-    row()
+    let matched = w
+        .current()
+        .map(|t| w.layout.proxy.match_summary(&t.proxy_summary))
+        .unwrap_or(SummaryMatch::System(None));
+    let open = matches!(w.layout.menu, Some(ContextMenu::ProxySwitcher));
+    let (dot_color, pill_fill, pill_border, pill_hover, value_color) = match &matched {
+        SummaryMatch::Profile { .. } | SummaryMatch::Custom(_) => {
+            (0x5eb8ff, 0x162942, 0x2f5a8c, 0x1c3556, 0xe3f1ff)
+        }
+        SummaryMatch::Direct => (0x5bd49a, 0x142923, 0x285a48, 0x1a352e, 0xd4f6e4),
+        SummaryMatch::System(_) => (0x7f93ab, 0x182130, 0x2a374b, 0x202c3f, 0xc9d5e5),
+    };
+    let value_label = matched.pill_label();
+    let help_text = format!(
+        "当前终端代理：{}。点击一键切换预设（Agent 终端将平滑重开并续接原对话）。",
+        matched.detail_label()
+    );
+    let switcher = row()
+        .key("proxy-switcher")
+        .role("button")
+        .label(format!("代理：{value_label}"))
+        .help(help_text)
+        .focusable(true)
+        .h(22.)
+        .px(8.)
+        .gap(5.)
+        .items_center()
+        .radius(6.)
+        .fill(crate::sidebar::ink(if open {
+            pill_hover
+        } else {
+            pill_fill
+        }))
+        .border(
+            1.,
+            crate::sidebar::ink(if open { 0x4b8ed6 } else { pill_border }),
+        )
+        .hover(crate::sidebar::ink(pill_hover))
+        .on_key(Workspace::workbench_key)
+        .on_press_tx(|w: &mut Workspace, tx| {
+            tx.instant();
+            if matches!(w.layout.menu, Some(ContextMenu::ProxySwitcher)) {
+                w.layout.menu = None;
+            } else {
+                w.layout.menu = Some(ContextMenu::ProxySwitcher);
+            }
+        })
+        .child(
+            el().size(6., 6.)
+                .radius(3.)
+                .fill(crate::sidebar::ink(dot_color)),
+        )
+        .child(icon(&crate::sidebar::icons::GLOBE, 12.).color(crate::sidebar::ink(0x889eb8)))
+        .child(
+            text("代理")
+                .font(crate::sidebar::ui_font(11.5, 450.))
+                .color(crate::sidebar::ink(0x889eb8)),
+        )
+        .child(
+            text(value_label)
+                .font(crate::sidebar::ui_font(11.5, 580.))
+                .truncate()
+                .color(crate::sidebar::ink(value_color)),
+        )
+        .child(icon(&crate::sidebar::icons::DOWN, 10.).color(crate::sidebar::ink(0x8da3bd)));
+
+    let metric_pair = |label: &'static str, value: String| {
+        row()
+            .items_center()
+            .gap(4.)
+            .child(
+                text(label)
+                    .font(crate::sidebar::ui_font(11., 460.))
+                    .color(crate::sidebar::ink(0x7d90a8)),
+            )
+            .child(
+                text(value)
+                    .font(crate::sidebar::ui_font(11.5, 540.))
+                    .color(crate::sidebar::ink(0xcbd6e6)),
+            )
+    };
+    let sep = || el().w(1.).h(10.).fill(crate::sidebar::ink(0x273447));
+    let stats = row()
+        .items_center()
+        .gap(10.)
+        .min_w(0.)
+        .child(metric_pair("CPU", cpu))
+        .child(sep())
+        .child(metric_pair("内存", mem))
+        .child(sep())
+        .child(metric_pair("↑", up))
+        .child(metric_pair("↓", down));
+
+    col()
         .key("system-metrics")
         .w_full()
-        .h(24.)
-        .items_center()
-        .justify_end()
-        .padding(4.)
-        .fill(crate::sidebar::ink(0x181d26))
+        .h(30.)
+        .fill(crate::sidebar::ink(0x111824))
         .child(
-            text(format!("CPU {cpu}     内存 {mem}     {net}"))
-                .font(TextStyle::new(11., 500.))
-                .truncate()
-                .min_w(0.)
-                .color(crate::sidebar::ink(0xb7c3d1)),
+            row()
+                .w_full()
+                .grow(1.)
+                .items_center()
+                .px(10.)
+                .gap(10.)
+                .child(switcher)
+                .child(el().grow(1.))
+                .child(stats),
         )
+        .child(el().w_full().h(1.).fill(crate::sidebar::ink(0x222d3e)))
 }
 
 fn worktree_head(project: &Path) -> Option<PathBuf> {

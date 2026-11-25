@@ -18,6 +18,7 @@ struct ShellLaunch {
     cwd: io::Result<PathBuf>,
     resume: Option<crate::transcript::Key>,
     proxy: Option<Arc<SessionProxy>>,
+    proxy_catalog: Option<PathBuf>,
     send: mpsc::Sender<Result<Session, String>>,
 }
 impl ShellLaunch {
@@ -37,6 +38,7 @@ impl ShellLaunch {
                         size,
                         wake.clone(),
                         self.proxy.as_ref().map(|p| p.directory.as_path()),
+                        self.proxy_catalog.as_deref(),
                     )
                 })
                 .map_err(|e| e.to_string());
@@ -94,6 +96,7 @@ pub(super) struct Tab {
     pub last_activity_ms: Option<i64>,
     pub unread: bool,
     was_running: bool,
+    was_waiting: bool,
     pub id: SessionId,
     pub directory: PathBuf,
     pub project: PathBuf,
@@ -103,6 +106,8 @@ pub(super) struct Tab {
     pub opening: Option<Startup>,
     pub session: Option<Session>,
     pub proxy: Option<Arc<SessionProxy>>,
+    pub proxy_summary: String,
+    pub auto_command: Option<String>,
     pub closing: bool,
     pub ended: Option<End>,
     pub error: Option<String>,
@@ -133,6 +138,7 @@ impl Tab {
             last_activity_ms: None,
             unread: false,
             was_running: false,
+            was_waiting: false,
             project: project_key(&directory),
             directory,
             opening: Some(opening),
@@ -141,6 +147,8 @@ impl Tab {
             foreground: None,
             session: None,
             proxy: None,
+            proxy_summary: String::new(),
+            auto_command: None,
             closing: false,
             ended: None,
             error: None,
@@ -212,6 +220,11 @@ impl Tab {
                     }
                     self.session = Some(s);
                     opened = true;
+                    if let Some(cmd) = self.auto_command.take()
+                        && let Some(session) = &self.session
+                    {
+                        session.input(format!("{cmd}\r").into_bytes());
+                    }
                     self.resolve_directory(wake);
                 }
                 Err(e) => self.error = Some(e),
@@ -274,6 +287,12 @@ impl Tab {
                 self.project = project_key(&path);
                 self.directory = path;
                 self.resolve_directory(wake);
+                changed = true;
+            }
+            if let Some(summary) = updates.proxy_summary
+                && summary != self.proxy_summary
+            {
+                self.proxy_summary = summary;
                 changed = true;
             }
         }
@@ -397,6 +416,7 @@ impl Tab {
 
     pub fn reset_reply(&mut self) {
         self.was_running = false;
+        self.was_waiting = false;
         self.unread = false;
         self.last_activity_ms = None;
     }
@@ -438,14 +458,15 @@ impl Tab {
             title.push_str(" · ");
         }
         title.push_str(&label);
-        title.push_str(" · Mcli");
+        title.push_str(" · ");
+        title.push_str(crate::single_instance::app_display_name());
         title
     }
 
-    pub fn observe_reply(&mut self, selected: bool) {
+    pub fn observe_reply(&mut self, selected: bool) -> Option<crate::sound::ReplyNotification> {
         if self.foreground.is_none() || self.ended.is_some() || self.closing {
             self.reset_reply();
-            return;
+            return None;
         }
         let state = self.state_text();
         if state == "运行中" {
@@ -455,12 +476,19 @@ impl Tab {
             && self.expected.as_ref().is_some_and(|k| k.agent == "codex")
         {
             self.was_running = false;
-            return;
+            self.was_waiting = state == "等待用户";
+            return None;
         }
+        let mut notified = None;
         if self.was_running && state == "就绪" {
             self.mark_reply(selected);
+            notified = Some(crate::sound::ReplyNotification::Completed);
+        } else if !self.was_waiting && state == "等待用户" {
+            notified = Some(crate::sound::ReplyNotification::Waiting);
         }
         self.was_running = state == "运行中";
+        self.was_waiting = state == "等待用户";
+        notified
     }
     pub fn mark_reply(&mut self, selected: bool) {
         self.unread = !selected;
@@ -479,6 +507,7 @@ pub(super) struct Workspace {
     saved_window: Option<crate::workspace_file::Snapshot>,
     deferred: VecDeque<ShellLaunch>,
     pub history: crate::history_view::Panel,
+    pub clawbot: crate::clawbot::bridge::ClawbotPanel,
     pub tabs: Vec<Tab>,
     pub active: Option<SessionId>,
     pub wake: Waker,
@@ -518,6 +547,7 @@ impl Workspace {
             saved_window: None,
             deferred: VecDeque::new(),
             history: Default::default(),
+            clawbot: Default::default(),
             tabs: Vec::new(),
             active: None,
             first_open: true,
@@ -565,6 +595,24 @@ impl Workspace {
             } else {
                 self.tray.take();
             }
+        }
+    }
+
+    pub fn set_tray_tooltip(&self, tip: &str) {
+        #[cfg(all(windows, not(test)))]
+        if let Some(tray) = &self.tray {
+            tray.set_tooltip(tip);
+        }
+        #[cfg(not(all(windows, not(test))))]
+        let _ = tip;
+    }
+    pub fn notify_agent_sound(&self, kind: crate::sound::ReplyNotification, selected: bool) {
+        if self
+            .layout
+            .sound
+            .should_play(kind, self.window_active, selected)
+        {
+            crate::sound::play_debounced(self.layout.sound.preset);
         }
     }
     pub fn active_index(&self) -> Option<usize> {
@@ -661,6 +709,14 @@ impl Workspace {
             tx.focus("terminal", false);
         }
     }
+    pub fn proxy_catalog_path(&self) -> Option<PathBuf> {
+        self.layout.proxy_catalog_path().or_else(|| {
+            self.window_file
+                .as_ref()
+                .and_then(|f| f.folder().parent())
+                .map(crate::proxy::catalog_path)
+        })
+    }
     pub fn new_shell(&mut self, directory: Option<PathBuf>, tx: &mut Tx) {
         self.open_shell(directory, None, tx);
     }
@@ -670,26 +726,94 @@ impl Workspace {
         resume: Option<crate::transcript::Key>,
         tx: &mut Tx,
     ) {
-        let launch = self.prepare_shell(directory, resume, None);
+        let launch = self.prepare_shell(directory, resume, None, None, None);
         self.select(Some(launch.id), tx);
         launch.start(self.size, self.wake.clone());
+    }
+    pub fn open_shell_with_proxy(
+        &mut self,
+        directory: Option<PathBuf>,
+        resume: Option<crate::transcript::Key>,
+        proxy_seed: Option<String>,
+        initial_summary: Option<String>,
+        auto_command: Option<String>,
+        tx: &mut Tx,
+    ) -> SessionId {
+        let launch =
+            self.prepare_shell(directory, resume, proxy_seed, initial_summary, auto_command);
+        let id = launch.id;
+        self.select(Some(id), tx);
+        launch.start(self.size, self.wake.clone());
+        id
+    }
+    pub fn reopen_tab_with_proxy(
+        &mut self,
+        id: SessionId,
+        target: &crate::proxy::ProxyTarget,
+        tx: &mut Tx,
+    ) -> Result<(SessionId, bool), String> {
+        let Some(tab) = self.tabs.iter().find(|t| t.id == id && !t.closing) else {
+            return Err("目标终端已关闭".into());
+        };
+        let dir = tab.directory.clone();
+        if !dir.is_dir() {
+            return Err(format!("项目目录已不存在：{}", dir.display()));
+        }
+        let resume = tab.bound.as_ref().or(tab.expected.as_ref()).cloned();
+        let auto_command = if resume.is_some() {
+            None
+        } else {
+            tab.foreground.map(|f| f.name().to_owned())
+        };
+        let has_resume = resume.is_some();
+        let seal =
+            crate::proxy::seal_target(target).map_err(|e| format!("加密代理配置失败：{e}"))?;
+        let new_id = self.open_shell_with_proxy(
+            Some(dir),
+            resume,
+            Some(seal),
+            Some(target.initial_summary()),
+            auto_command,
+            tx,
+        );
+        self.close(id, tx);
+        self.select(Some(new_id), tx);
+        Ok((new_id, has_resume))
     }
     fn prepare_shell(
         &mut self,
         directory: Option<PathBuf>,
         resume: Option<crate::transcript::Key>,
-        saved_proxy: Option<String>,
+        mut saved_proxy: Option<String>,
+        mut initial_summary: Option<String>,
+        auto_command: Option<String>,
     ) -> ShellLaunch {
         let cwd = directory.map(Ok).unwrap_or_else(shell::starting_directory);
         let id = SessionId::new();
         let (send, recv) = mpsc::channel();
+        if saved_proxy.is_none()
+            && resume.is_none()
+            && let Some(default_target) = self.layout.proxy.default_target()
+        {
+            if let Ok(seal) = crate::proxy::seal_target(&default_target) {
+                saved_proxy = Some(seal);
+            }
+            if initial_summary.is_none() {
+                initial_summary = Some(default_target.initial_summary());
+            }
+        }
         let mut tab = Tab::pending(id, cwd.as_ref().ok().cloned().unwrap_or_default(), recv);
         tab.expected = resume.clone();
+        if let Some(summary) = initial_summary {
+            tab.proxy_summary = summary;
+        }
+        tab.auto_command = auto_command;
         let proxy = self
             .window_file
             .as_ref()
             .map(|f| Arc::new(SessionProxy::new(f.folder(), id, saved_proxy)));
         tab.proxy = proxy.clone();
+        let proxy_catalog = self.proxy_catalog_path();
         self.tabs.push(tab);
         self.first_open = false;
         ShellLaunch {
@@ -697,6 +821,7 @@ impl Workspace {
             cwd,
             resume,
             proxy,
+            proxy_catalog,
             send,
         }
     }
@@ -736,8 +861,13 @@ impl Workspace {
             if let Some(snapshot) = self.saved_window.take() {
                 self.first_open = false;
                 for tab in snapshot.tabs {
-                    let launch =
-                        self.prepare_shell(Some(tab.directory), tab.conversation, tab.proxy);
+                    let launch = self.prepare_shell(
+                        Some(tab.directory),
+                        tab.conversation,
+                        tab.proxy,
+                        None,
+                        None,
+                    );
                     self.deferred.push_back(launch);
                 }
                 let selected = self
@@ -873,7 +1003,14 @@ impl Workspace {
                 }
             }
             if updated || previous != tab.run || had_agy_events {
-                tab.observe_reply(selected);
+                if let Some(kind) = tab.observe_reply(selected)
+                    && self
+                        .layout
+                        .sound
+                        .should_play(kind, self.window_active, selected)
+                {
+                    crate::sound::play_debounced(self.layout.sound.preset);
+                }
             }
         }
         let old_len = self.tabs.len();
@@ -908,6 +1045,7 @@ impl Workspace {
             self.force = false;
         }
         changed |= self.poll_history(tx);
+        changed |= self.poll_clawbot(clock, tx);
         changed |= self.update_caption(clock, tx);
         self.desktop.poll() || changed
     }
@@ -940,9 +1078,10 @@ impl Workspace {
             self.next_spinner = None;
             self.spinner = 0;
         }
-        let title = self
-            .current()
-            .map_or_else(|| "Mcli".into(), |tab| tab.caption(self.spinner));
+        let title = self.current().map_or_else(
+            || crate::single_instance::app_display_name().into(),
+            |tab| tab.caption(self.spinner),
+        );
         if title != self.window_title {
             tx.set_title(&title);
             self.window_title = title;
@@ -994,6 +1133,7 @@ impl Workspace {
         }
     }
     pub fn on_quit_app(&mut self, tx: &mut Tx) {
+        self.clawbot.stop();
         self.save_window(tx);
         #[cfg(all(windows, not(test)))]
         self.tray.take();
@@ -1002,6 +1142,7 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
+        self.clawbot.stop();
         #[cfg(all(windows, not(test)))]
         self.tray.take();
         self.deferred.clear();

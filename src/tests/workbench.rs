@@ -868,3 +868,218 @@ fn settings_close_to_tray_and_rebind_shortcuts_persist() {
     let reloaded_reset = crate::workbench::Layout::new(rune::prefs::Prefs::at(prefs_path));
     assert!(reloaded_reset.shortcuts.is_default());
 }
+
+#[test]
+fn normalize_explorer_path_handles_verbatim_unc_and_trailing_slashes() {
+    use crate::sidebar::normalize_explorer_path;
+    assert_eq!(
+        normalize_explorer_path(Path::new(r"\\?\L:\AI\Mcli\")),
+        PathBuf::from(r"L:\AI\Mcli")
+    );
+    assert_eq!(
+        normalize_explorer_path(Path::new(r"\\?\UNC\fileserver\share\proj\")),
+        PathBuf::from(r"\\fileserver\share\proj")
+    );
+    assert_eq!(
+        normalize_explorer_path(Path::new("L:/AI/My App/")),
+        PathBuf::from(r"L:\AI\My App")
+    );
+    assert_eq!(
+        normalize_explorer_path(Path::new(r"C:\")),
+        PathBuf::from(r"C:\")
+    );
+}
+
+#[test]
+fn project_context_menu_expands_and_collapses_all_directories() {
+    let mut rt = app().headless_runtime((1040., 680.), rune::Env::new(true, 1.));
+    let id_a = SessionId::new();
+    let id_b = SessionId::new();
+    rt.update(|w, tx| {
+        w.first_open = false;
+        for (id, dir) in [(id_a, r"C:\proj-alpha"), (id_b, r"C:\proj-beta")] {
+            let mut tab = crate::workspace::Tab::pending(
+                id,
+                PathBuf::from(dir),
+                std::sync::mpsc::channel().1,
+            );
+            tab.opening = None;
+            w.tabs.push(tab);
+        }
+        w.select(Some(id_a), tx);
+    });
+    rt.frame(0.1);
+    let anchor = format!("project-{}", id_a.0);
+    let [x, y, w, h] = rt.presented(&anchor).unwrap().0;
+    rt.secondary_down(x + w * 0.5, y + h * 0.5);
+    rt.secondary_up(x + w * 0.5, y + h * 0.5);
+    rt.frame(0.12);
+    assert!(rt.presented("mcli-context-menu").is_some());
+    assert!(rt.presented("menu-item-open-dir").is_some());
+    assert!(rt.presented("menu-item-new-shell").is_some());
+    assert!(rt.presented("menu-item-copy-path").is_some());
+    assert!(rt.presented("menu-item-expand-all").is_some());
+    assert!(rt.presented("menu-item-collapse-all").is_some());
+
+    // Collapse all projects via Mcli styled context menu.
+    press(&mut rt, "menu-item-collapse-all", 0.14);
+    rt.frame(0.15);
+    assert!(rt.presented("mcli-context-menu").is_none());
+    assert_eq!(rt.state.layout.collapsed.len(), 2);
+    assert!(rt.presented(&format!("session-{}", id_a.0)).is_none());
+    assert!(rt.presented(&format!("session-{}", id_b.0)).is_none());
+
+    // Re-open context menu and expand all projects.
+    let [x, y, w, h] = rt.presented(&anchor).unwrap().0;
+    rt.secondary_down(x + w * 0.5, y + h * 0.5);
+    rt.secondary_up(x + w * 0.5, y + h * 0.5);
+    rt.frame(0.16);
+    press(&mut rt, "menu-item-expand-all", 0.18);
+    rt.frame(0.19);
+    assert!(rt.state.layout.collapsed.is_empty());
+    assert!(rt.presented(&format!("session-{}", id_a.0)).is_some());
+    assert!(rt.presented(&format!("session-{}", id_b.0)).is_some());
+}
+
+#[test]
+fn proxy_profiles_settings_and_top_bar_switcher() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".tmp/proxy-ui-tests")
+        .join(format!("{}-{}", std::process::id(), SessionId::new().0));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prefs_path = dir.join("preferences.json");
+
+    let mut rt = app().headless_runtime((1180., 680.), rune::Env::new(true, 1.));
+    let live = SessionId::new();
+    rt.update(|w, tx| {
+        w.first_open = false;
+        w.layout = crate::workbench::Layout::new(rune::prefs::Prefs::at(prefs_path.clone()));
+        let mut t1 = crate::workspace::Tab::pending(live, dir.clone(), mpsc::channel().1);
+        t1.opening = None;
+        w.tabs.push(t1);
+        w.select(Some(live), tx);
+    });
+    rt.frame(0.016);
+
+    // 1. Add two profiles (port shorthand + full URL) and verify persistence & catalog sync.
+    rt.update(|w, tx| {
+        w.layout.proxy_name_input = rune::TextEdit::new("p1");
+        w.layout.proxy_url_input = rune::TextEdit::new("10808");
+        w.add_proxy_profile(tx);
+        w.layout.proxy_name_input = rune::TextEdit::new("p2");
+        w.layout.proxy_url_input = rune::TextEdit::new("http://127.0.0.1:7890");
+        w.add_proxy_profile(tx);
+        w.set_default_proxy_profile(Some("p1".into()), tx);
+        w.set_agent_default_proxy("codex", Some("p2".into()), tx);
+        w.layout.finish_width_write();
+    });
+    rt.frame(0.032);
+    assert_eq!(rt.state.layout.proxy.profiles.len(), 2);
+    assert!(dir.join("proxy-profiles.json").is_file());
+    let reloaded = crate::workbench::Layout::new(rune::prefs::Prefs::at(prefs_path));
+    assert_eq!(reloaded.proxy.profiles.len(), 2);
+    assert_eq!(reloaded.proxy.profiles[0].url, "http://127.0.0.1:10808");
+    assert_eq!(reloaded.proxy.default_profile.as_deref(), Some("p1"));
+    assert_eq!(reloaded.proxy.agent_default("codex"), Some("p2"));
+
+    // 2. Click top-bar proxy switcher pill and pick p1, then manage.
+    press(&mut rt, "proxy-switcher", 0.05);
+    rt.frame(0.06);
+    assert!(rt.presented("mcli-context-menu").is_some());
+    assert!(rt.presented("menu-item-sys").is_some());
+    assert!(rt.presented("menu-item-off").is_some());
+    assert!(rt.presented("menu-item-profile-p1").is_some());
+    assert!(rt.presented("menu-item-profile-p2").is_some());
+    assert!(rt.presented("menu-item-manage").is_some());
+
+    press(&mut rt, "menu-item-profile-p1", 0.07);
+    rt.frame(0.08);
+    assert!(rt.presented("mcli-context-menu").is_none());
+    assert_eq!(rt.state.tabs[0].proxy_summary, "http://127.0.0.1:10808");
+
+    press(&mut rt, "proxy-switcher", 0.09);
+    rt.frame(0.10);
+    press(&mut rt, "menu-item-manage", 0.11);
+    rt.frame(0.12);
+    assert!(rt.state.layout.settings);
+    assert!(rt.presented("mcli-context-menu").is_none());
+}
+
+#[test]
+fn agent_completion_sound_respects_background_mode_waiting_and_persists() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".tmp/sound-tests")
+        .join(format!("{}-{}", std::process::id(), SessionId::new().0));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prefs_path = dir.join("preferences.json");
+
+    let mut rt = app().headless_runtime((1180., 680.), rune::Env::new(true, 1.));
+    let (id_a, id_b) = (SessionId::new(), SessionId::new());
+    rt.update(|w, tx| {
+        w.first_open = false;
+        w.window_active = true;
+        w.layout = crate::workbench::Layout::new(rune::prefs::Prefs::at(prefs_path.clone()));
+        for (id, name) in [(id_a, "alpha"), (id_b, "beta")] {
+            let mut tab = crate::workspace::Tab::pending(id, dir.join(name), mpsc::channel().1);
+            tab.opening = None;
+            tab.foreground = Some(crate::shell::Foreground::Agy);
+            tab.phase = "运行中".into();
+            w.tabs.push(tab);
+        }
+        w.select(Some(id_a), tx);
+        // Prime `was_running` on both tabs.
+        let _ = w.tabs[0].observe_reply(true);
+        let _ = w.tabs[1].observe_reply(false);
+    });
+    let _ = crate::sound::take_test_events();
+
+    // 1. Active window + selected tab completes -> silent in default Background mode.
+    rt.update(|w, _| {
+        w.tabs[0].phase = "就绪".into();
+        if let Some(kind) = w.tabs[0].observe_reply(true) {
+            w.notify_agent_sound(kind, true);
+        }
+    });
+    assert!(crate::sound::take_test_events().is_empty());
+
+    // 2. Non-selected background tab completes -> plays Terminal sound.
+    rt.update(|w, _| {
+        w.tabs[1].phase = "就绪".into();
+        if let Some(kind) = w.tabs[1].observe_reply(false) {
+            w.notify_agent_sound(kind, false);
+        }
+    });
+    assert_eq!(
+        crate::sound::take_test_events(),
+        vec![crate::sound::SoundPreset::Terminal]
+    );
+
+    // 3. Window unfocused + selected tab enters Waiting -> plays sound.
+    rt.update(|w, _| {
+        w.window_active = false;
+        w.tabs[0].phase = "等待用户".into();
+        if let Some(kind) = w.tabs[0].observe_reply(true) {
+            w.notify_agent_sound(kind, true);
+        }
+    });
+    assert_eq!(
+        crate::sound::take_test_events(),
+        vec![crate::sound::SoundPreset::Terminal]
+    );
+
+    // 4. Persist sound preferences across reload.
+    rt.update(|w, tx| {
+        w.set_sound_mode(crate::sound::SoundMode::Always, tx);
+        w.set_sound_preset(crate::sound::SoundPreset::Notify, tx);
+        w.set_sound_on_waiting(false, tx);
+        w.layout.finish_width_write();
+    });
+    assert_eq!(
+        crate::sound::take_test_events(),
+        vec![crate::sound::SoundPreset::Notify]
+    );
+    let reloaded = crate::workbench::Layout::new(rune::prefs::Prefs::at(prefs_path));
+    assert_eq!(reloaded.sound.mode, crate::sound::SoundMode::Always);
+    assert_eq!(reloaded.sound.preset, crate::sound::SoundPreset::Notify);
+    assert!(!reloaded.sound.on_waiting);
+}
