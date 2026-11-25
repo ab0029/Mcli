@@ -2,6 +2,8 @@
 
 [English](README.en.md) | **简体中文**
 
+![Mcli - 面向 Windows 的多 Agent 原生终端工作台](assets/promo/mcli-github-showcase.png)
+
 Mcli 是一款面向 Windows 的原生多 Agent CLI 桌面终端工作台，使用 Rust 与 Rune 构建。
 
 一个窗口可以同时运行多个相互独立的 PowerShell 会话，左侧按工作目录与 Git 分支自动归组，右侧呈现原生 ConPTY + GPU 渲染的终端网格。无需修改命令行参数，也不必为项目配置钩子，直接输入 `codex`、`agy`、`kimi` 或 `grok` 即可无缝接入状态追踪、后台未读提醒、最近任务与提示词足迹。

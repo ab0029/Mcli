@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README.md)
 
+![Mcli - Native Windows Multi-Agent CLI Terminal Workbench](assets/promo/mcli-github-showcase.png)
+
 Mcli is a native Windows desktop multi-Agent CLI terminal workbench built with Rust and Rune.
 
 Run multiple independent PowerShell sessions in a single window, automatically grouped by working directory and Git branch on the left while interacting with a GPU-rendered native ConPTY terminal on the right. Mcli never rewrites your CLI arguments or requires project hooks -- just type `codex`, `agy`, `kimi`, or `grok` to get live status indicators, background reply badges, recent tasks, and searchable prompt footprints.
