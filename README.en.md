@@ -29,7 +29,7 @@ Run multiple independent PowerShell sessions in a single window, automatically g
   - Switch proxies from the styled top-bar pill (idle Agent tabs seamlessly reopen and resume their official conversation ID) or inside PowerShell via `mp <name|index|off|sys>`.
 - **Optional WeChat ClawBot Remote Control (Off by Default)**
   - Pair your WeChat account via QR code in **Settings** with DPAPI-encrypted local credentials and strict single-user whitelist enforcement (zero async runtime dependencies, pure WinHTTP long-polling).
-  - Supports `/list`, `/use`, `/status`, `/proxy`, `/new`, `/reopen`, `/screen`, `/stop`, `/approve`, `/deny`, `/key`, `/more`, `/ping`, opt-in `/sh`, 3h/2h/1h proactive keepalive reminders, and offline stale-message protection on restart.
+  - Supports `/list`, `/use`, `/status`, `/last` (`/r` to fetch the clean complete latest reply or last 2-5 turns), `/proxy`, `/new`, `/reopen`, `/screen`, `/stop`, `/approve`, `/deny`, `/key`, `/more`, `/ping`, opt-in `/sh`, 3h/2h/1h proactive keepalive reminders, and offline stale-message protection on restart.
 - **Completion Sound Alerts & Customizable Settings**
   - Plays Windows system notification sounds when an Agent finishes or waits for approval (defaults to background / unfocused / non-selected tabs only, with 1.5s debounce, 3 selectable system sounds + live preview, dynamic DLL loading with zero static `winmm.dll` dependency, and silent fallback on stripped systems).
   - Configure **Minimize to System Tray on Close**, toggle the **Top System Metrics & Proxy Bar**, and **rebind all global keyboard shortcuts** in Settings.

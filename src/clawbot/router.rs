@@ -64,6 +64,9 @@ pub enum ParsedCommand {
     List,
     Use(Option<String>),
     Status,
+    Last {
+        count: usize,
+    },
     Proxy {
         target: Option<String>,
         restart: bool,
@@ -102,6 +105,19 @@ pub fn parse_command(raw: &str) -> ParsedCommand {
         "/list" | "/ls" => ParsedCommand::List,
         "/use" | "/switch" => ParsedCommand::Use((!rest.is_empty()).then(|| rest.to_owned())),
         "/status" | "/st" => ParsedCommand::Status,
+        "/last" | "/r" | "/reply" => {
+            if rest.is_empty() {
+                ParsedCommand::Last { count: 1 }
+            } else if let Ok(n) = rest.parse::<usize>() {
+                ParsedCommand::Last {
+                    count: n.clamp(1, 5),
+                }
+            } else {
+                ParsedCommand::UnknownSlash(format!(
+                    "{head} 参数无效，用法：/last [1-5]（或 /r [1-5]）"
+                ))
+            }
+        }
         "/proxy" | "/pr" => parse_proxy_args(rest),
         "/new" => parse_new_args(rest),
         "/reopen" | "/restart" => ParsedCommand::Reopen,
@@ -319,10 +335,11 @@ pub fn help_text(bound_desc: &str, allow_raw_shell: bool) -> String {
 /list -- 查看全部项目、终端编号与运行状态\n\
 /use <编号|关键词> -- 切换当前远程控制目标终端\n\
 /status -- 查看当前目标终端状态与摘要\n\
+/last [1-5]（或 /r）-- 读取当前 Agent 最新一条干净完整回复（或最近 2-5 轮对话）\n\
 /proxy [预设名|编号|off|sys] [restart] -- 查看或一键切换代理（Agent 按原 ID 平滑续接）\n\
 /new [路径|项目名] [codex|agy|kimi|grok|shell] [proxy=<名>] -- 新建终端或启动 Agent\n\
 /reopen -- 在原目录重开已退出/已关闭的绑定终端（若有官方对话则按原 ID 续接）\n\
-/screen [行数] -- 查看当前终端底部纯文本屏显（默认 30 行）\n\
+/screen [行数] -- 查看当前终端底部纯文本屏显（默认 30 行，适合看报错/菜单）\n\
 /stop -- 向当前终端发送 Ctrl+C 中断任务\n\
 /approve 或 /deny -- 在「等待用户」时显式确认或拒绝\n\
 /key <enter|esc|y|n|up|down|tab|ctrl+c> -- 发送按键\n\
@@ -347,6 +364,15 @@ mod tests {
         );
         assert_eq!(parse_command("/use"), ParsedCommand::Use(None));
         assert_eq!(parse_command("/status"), ParsedCommand::Status);
+        assert_eq!(parse_command("/last"), ParsedCommand::Last { count: 1 });
+        assert_eq!(parse_command("/r"), ParsedCommand::Last { count: 1 });
+        assert_eq!(parse_command("/reply 3"), ParsedCommand::Last { count: 3 });
+        assert_eq!(parse_command("/last 0"), ParsedCommand::Last { count: 1 });
+        assert_eq!(parse_command("/last 10"), ParsedCommand::Last { count: 5 });
+        assert!(matches!(
+            parse_command("/r abc"),
+            ParsedCommand::UnknownSlash(_)
+        ));
         assert_eq!(
             parse_command("/new L:\\AI\\My App codex"),
             ParsedCommand::New {

@@ -2,7 +2,7 @@ use super::*;
 use crate::clawbot::ConnectionState;
 use crate::clawbot::service::Service;
 use crate::clawbot::store::AuthStore;
-use crate::transcript::{Key, Roots, latest_reply};
+use crate::transcript::{Key, Roots, Turn, latest_reply, recent_turns};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -943,6 +943,288 @@ fn clawbot_proxy_command_switches_shell_and_reopens_agent_with_same_id() {
                     .any(|(c, t)| c == "ctx_p2_go" && t.contains("按原官方对话 ID 续接 Codex"))
         }),
         "expected agent reopen with same official ID, got: {:?}",
+        server.sent_texts()
+    );
+}
+
+#[test]
+fn transcript_recent_turns_handles_multiturn_grok_and_mid_generation() {
+    let root = crate::tests::phase_four::folder("clawbot-turns");
+    let roots = Roots {
+        codex: root.join("codex"),
+        agy: root.join("agy"),
+        kimi: root.join("kimi"),
+        grok: root.join("grok"),
+    };
+
+    // 1. Codex: two completed turns + one trailing in-progress prompt with no reply yet.
+    let codex_id = "0195a000-0000-7000-8000-000000000099";
+    let codex_key = Key::new("codex", codex_id).unwrap();
+    let codex_file = roots
+        .codex
+        .join("sessions/2026/11/25")
+        .join(format!("rollout-2026-11-25-{codex_id}.jsonl"));
+    std::fs::create_dir_all(codex_file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &codex_file,
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            json!({"type":"event_msg","timestamp":"2026-11-25T00:00:01Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"第一问"}]}}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"第一答"}}),
+            json!({"type":"event_msg","timestamp":"2026-11-25T00:00:02Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"第二问"}]}}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"第二答"}}),
+            json!({"type":"event_msg","timestamp":"2026-11-25T00:00:03Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u3","content":[{"type":"text","text":"第三问（生成中）"}]}}})
+        ),
+    )
+    .unwrap();
+    let turns = recent_turns(&roots, &codex_key, &codex_file, 2).unwrap();
+    assert_eq!(
+        turns,
+        vec![
+            Turn {
+                prompt: "第二问".into(),
+                reply: Some("第二答".into()),
+            },
+            Turn {
+                prompt: "第三问（生成中）".into(),
+                reply: None,
+            },
+        ]
+    );
+
+    // 2. Grok: two multi-chunk turns flushed cleanly across prompt boundary.
+    let grok_key = Key::new("grok", "grok-turns-01").unwrap();
+    let grok_file = roots.grok.join("sessions/ws1/grok-turns-01/updates.jsonl");
+    std::fs::create_dir_all(grok_file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &grok_file,
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"G1"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"PartA "}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"PartB"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"G2"}}}}),
+            json!({"params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reply2"}}}})
+        ),
+    )
+    .unwrap();
+    let grok_turns = recent_turns(&roots, &grok_key, &grok_file, 5).unwrap();
+    assert_eq!(
+        grok_turns,
+        vec![
+            Turn {
+                prompt: "G1".into(),
+                reply: Some("PartA PartB".into()),
+            },
+            Turn {
+                prompt: "G2".into(),
+                reply: Some("Reply2".into()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn clawbot_last_command_returns_clean_reply_multiturn_mid_gen_and_fallback() {
+    let server = MockIlinkServer::start();
+    let data_dir = crate::tests::phase_four::folder("clawbot-last");
+    let roots = Roots {
+        codex: data_dir.join("roots/codex"),
+        agy: data_dir.join("roots/agy"),
+        kimi: data_dir.join("roots/kimi"),
+        grok: data_dir.join("roots/grok"),
+    };
+    let conv_id = "0195a000-0000-7000-8000-000000000123";
+    let key = Key::new("codex", conv_id).unwrap();
+    let codex_file = roots
+        .codex
+        .join("sessions/2026/11/25")
+        .join(format!("rollout-2026-11-25-{conv_id}.jsonl"));
+    std::fs::create_dir_all(codex_file.parent().unwrap()).unwrap();
+    let initial_transcript = format!(
+        "{}\n{}\n{}\n{}\n{}\n",
+        json!({"type":"session_meta","payload":{"id":conv_id}}),
+        json!({"type":"event_msg","timestamp":"2026-11-25T00:00:01Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"检查一下版本"}]}}}),
+        json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"当前版本是 v0.2.0。"}}),
+        json!({"type":"event_msg","timestamp":"2026-11-25T00:00:02Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"总结刚刚的改动"}]}}}),
+        json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"已完成两项优化：\n1. 新增 /last 指令\n2. 支持 /r 快捷别名"}})
+    );
+    std::fs::write(&codex_file, &initial_transcript).unwrap();
+
+    let db_path = data_dir.join("conversations.sqlite3");
+    {
+        let mut conv_store =
+            crate::conversation_store::Store::open(&db_path, roots.clone()).unwrap();
+        conv_store.sync(&key, &data_dir, &codex_file).unwrap();
+    }
+
+    let store = AuthStore::in_dir(&data_dir);
+    store
+        .save(&crate::clawbot::store::AuthRecord {
+            bot_token: "tok_last".into(),
+            ilink_bot_id: "bot_last".into(),
+            ilink_user_id: "owner_last@im.wechat".into(),
+            base_url: server.base_url.clone(),
+            get_updates_buf: String::new(),
+            last_context_token: None,
+            last_inbound_ms: None,
+            keepalive_sent_mask: 0,
+        })
+        .unwrap();
+
+    let mut rt = app().headless_runtime((1040., 680.), rune::Env::new(true, 1.));
+    let agent_id = SessionId::new();
+    let shell_id = SessionId::new();
+    rt.update(|w, tx| {
+        w.first_open = false;
+        w.layout = crate::workbench::Layout::new(rune::prefs::Prefs::at(
+            data_dir.join("preferences.json"),
+        ));
+        w.layout.clawbot.enabled = true;
+        w.layout.clawbot.base_url = server.base_url.clone();
+        w.history.service = Some(crate::history::Service::start(
+            db_path.clone(),
+            roots.clone(),
+            w.wake.clone(),
+        ));
+
+        let mut ag = crate::workspace::Tab::pending(
+            agent_id,
+            data_dir.clone(),
+            std::sync::mpsc::channel().1,
+        );
+        ag.opening = None;
+        ag.foreground = Some(crate::shell::Foreground::Codex);
+        ag.bound = Some(key.clone());
+        ag.phase = "空闲".into();
+
+        let mut sh = crate::workspace::Tab::pending(
+            shell_id,
+            data_dir.clone(),
+            std::sync::mpsc::channel().1,
+        );
+        sh.opening = None;
+        sh.preview = "PowerShell 预览内容".into();
+
+        w.tabs.push(ag);
+        w.tabs.push(sh);
+        w.clawbot.bound_tab = Some(agent_id);
+        w.select(Some(agent_id), tx);
+        w.init_clawbot(data_dir.clone());
+    });
+
+    // 1. `/r` fetches clean latest official reply; `/status` includes `/r` hint.
+    server.push_update(json!({
+        "ret": 0,
+        "get_updates_buf": "l1",
+        "msgs": [
+            {
+                "message_id": "m_last_1",
+                "message_type": 1,
+                "from_user_id": "owner_last@im.wechat",
+                "context_token": "ctx_r",
+                "item_list": [{ "type": 1, "text_item": { "text": "/r" } }]
+            },
+            {
+                "message_id": "m_last_st",
+                "message_type": 1,
+                "from_user_id": "owner_last@im.wechat",
+                "context_token": "ctx_st",
+                "item_list": [{ "type": 1, "text_item": { "text": "/status" } }]
+            }
+        ]
+    }));
+    assert!(
+        wait_until!(rt, Duration::from_secs(6), |_: &Workspace| {
+            let sent = server.sent_texts();
+            sent.iter().any(|(c, t)| {
+                c == "ctx_r" && t.contains("已完成两项优化") && t.contains("最新回复")
+            }) && sent
+                .iter()
+                .any(|(c, t)| c == "ctx_st" && t.contains("发送 /r"))
+        }),
+        "expected /r reply and /status hint, got: {:?}",
+        server.sent_texts()
+    );
+
+    // 2. `/last 2` returns both turns formatted cleanly.
+    server.push_update(json!({
+        "ret": 0,
+        "get_updates_buf": "l2",
+        "msgs": [{
+            "message_id": "m_last_2",
+            "message_type": 1,
+            "from_user_id": "owner_last@im.wechat",
+            "context_token": "ctx_last2",
+            "item_list": [{ "type": 1, "text_item": { "text": "/last 2" } }]
+        }]
+    }));
+    assert!(
+        wait_until!(rt, Duration::from_secs(6), |_: &Workspace| {
+            server.sent_texts().iter().any(|(c, t)| {
+                c == "ctx_last2"
+                    && t.contains("【第 1/2 轮】")
+                    && t.contains("当前版本是 v0.2.0")
+                    && t.contains("【第 2/2 轮】")
+                    && t.contains("支持 /r 快捷别名")
+            })
+        }),
+        "expected 2-turn output, got: {:?}",
+        server.sent_texts()
+    );
+
+    // 3. Append a new in-progress user prompt without reply -> `/last` reports generating & shows previous completed reply.
+    let updated_transcript = format!(
+        "{initial_transcript}{}\n",
+        json!({"type":"event_msg","timestamp":"2026-11-25T00:00:03Z","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u3","content":[{"type":"text","text":"继续跑回归测试"}]}}})
+    );
+    std::fs::write(&codex_file, updated_transcript).unwrap();
+    rt.update(|w, _| w.tabs[0].phase = "运行中".into());
+    server.push_update(json!({
+        "ret": 0,
+        "get_updates_buf": "l3",
+        "msgs": [{
+            "message_id": "m_last_3",
+            "message_type": 1,
+            "from_user_id": "owner_last@im.wechat",
+            "context_token": "ctx_midgen",
+            "item_list": [{ "type": 1, "text_item": { "text": "/last" } }]
+        }]
+    }));
+    assert!(
+        wait_until!(rt, Duration::from_secs(6), |_: &Workspace| {
+            server.sent_texts().iter().any(|(c, t)| {
+                c == "ctx_midgen"
+                    && t.contains("当前正在生成新回复")
+                    && t.contains("已完成两项优化")
+            })
+        }),
+        "expected mid-generation previous reply fallback, got: {:?}",
+        server.sent_texts()
+    );
+
+    // 4. Plain PowerShell tab (no official conversation key) -> graceful fallback.
+    rt.update(|w, _| w.clawbot.bound_tab = Some(shell_id));
+    server.push_update(json!({
+        "ret": 0,
+        "get_updates_buf": "l4",
+        "msgs": [{
+            "message_id": "m_last_4",
+            "message_type": 1,
+            "from_user_id": "owner_last@im.wechat",
+            "context_token": "ctx_shell_last",
+            "item_list": [{ "type": 1, "text_item": { "text": "/r" } }]
+        }]
+    }));
+    assert!(
+        wait_until!(rt, Duration::from_secs(6), |_: &Workspace| {
+            server.sent_texts().iter().any(|(c, t)| {
+                c == "ctx_shell_last"
+                    && t.contains("未关联官方 Agent 对话")
+                    && t.contains("PowerShell 预览内容")
+            })
+        }),
+        "expected shell fallback, got: {:?}",
         server.sent_texts()
     );
 }

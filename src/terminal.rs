@@ -140,11 +140,21 @@ impl ShellUpdates {
             .push((run.to_owned(), crate::hook_wire::timestamp_micros(), event));
     }
 }
+#[derive(Clone, Copy, Debug)]
+struct ResizeSettle {
+    deadline: std::time::Instant,
+    quiet_until: Option<std::time::Instant>,
+}
+
+const RESIZE_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(65);
+const RESIZE_QUIET_GAP: std::time::Duration = std::time::Duration::from_millis(12);
+
 #[derive(Clone)]
 pub struct Listener {
     input: mpsc::Sender<Input>,
     restore: Arc<Mutex<Option<RestoreSignals>>>,
     size: Arc<Mutex<Size>>,
+    resize_settle: Arc<Mutex<Option<ResizeSettle>>>,
     pub dirty: Arc<AtomicBool>,
     pub visible: Arc<AtomicBool>,
     pub sidebar_dirty: Arc<AtomicBool>,
@@ -495,6 +505,7 @@ impl Session {
             input,
             restore: Default::default(),
             size: Arc::new(Mutex::new(size)),
+            resize_settle: Default::default(),
             dirty: Arc::new(AtomicBool::new(false)),
             visible: Arc::new(AtomicBool::new(false)),
             sidebar_dirty: Arc::new(AtomicBool::new(false)),
@@ -598,6 +609,11 @@ impl Session {
             let mut last_bg_screen = std::time::Instant::now() - BG_SCREEN_INTERVAL;
             let mut bg_screen_dirty = false;
             loop {
+                let settle_due = read_events
+                    .resize_settle
+                    .lock()
+                    .unwrap()
+                    .map(|s| s.quiet_until.unwrap_or(s.deadline));
                 // Only wake on a timer while the CLI holds a synchronized update open.
                 // A lost end sequence must not hide the last frame until another byte arrives.
                 if let Some(deadline) = parser.sync_timeout().sync_timeout() {
@@ -625,6 +641,32 @@ impl Session {
                         last_bg_screen = now;
                     } else if matches!(pty::readable(&output), Ok(false)) {
                         thread::sleep(left.min(std::time::Duration::from_millis(4)));
+                        continue;
+                    }
+                } else if let Some(settle_due) = settle_due {
+                    let now = std::time::Instant::now();
+                    if now >= settle_due {
+                        *read_events.resize_settle.lock().unwrap() = None;
+                        if let Some(agent) = foreground {
+                            let term = read_term.lock().unwrap();
+                            update_screen(
+                                &term,
+                                agent,
+                                &mut screen,
+                                agy_run.as_deref(),
+                                &mut composer_busy,
+                                &mut composer_idle_sent,
+                                osc7501_active,
+                                &mut ready,
+                            );
+                        }
+                        read_events.refresh();
+                        pending_refresh = false;
+                        bg_screen_dirty = false;
+                        last_wake = now;
+                        last_bg_screen = now;
+                    } else if matches!(pty::readable(&output), Ok(false)) {
+                        thread::sleep((settle_due - now).min(std::time::Duration::from_millis(2)));
                         continue;
                     }
                 } else if pending_refresh {
@@ -905,8 +947,26 @@ impl Session {
                 if chunks > 0 && parser.sync_timeout().sync_timeout().is_none() {
                     let visible = read_events.visible.load(Ordering::Acquire);
                     let now = std::time::Instant::now();
+                    let settling = {
+                        let mut guard = read_events.resize_settle.lock().unwrap();
+                        if let Some(s) = guard.as_mut() {
+                            if now < s.deadline {
+                                s.quiet_until = Some((now + RESIZE_QUIET_GAP).min(s.deadline));
+                                true
+                            } else {
+                                *guard = None;
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    };
                     if visible {
-                        if now.saturating_duration_since(last_wake) >= FRAME_COALESCE {
+                        if settling {
+                            // Hold ConPTY's post-resize clear + redraw burst until the pipe goes
+                            // briefly quiet or the short cap expires so partial frames never flash.
+                            pending_refresh = true;
+                        } else if now.saturating_duration_since(last_wake) >= FRAME_COALESCE {
                             if let Some(agent) = foreground {
                                 let term = read_term.lock().unwrap();
                                 update_screen(
@@ -1089,10 +1149,16 @@ impl Session {
         if *current == s {
             return Ok(());
         }
-        // Resize the in-memory grid immediately, and run ResizePseudoConsole off the UI thread.
+        // Resize the in-memory grid immediately, coalesce ConPTY's clear+redraw burst,
+        // and run ResizePseudoConsole off the UI thread.
         self.term.lock().unwrap().resize(s);
         *current = s;
         drop(current);
+        let now = std::time::Instant::now();
+        *self.listener.resize_settle.lock().unwrap() = Some(ResizeSettle {
+            deadline: now + RESIZE_MAX_WAIT,
+            quiet_until: None,
+        });
         let _ = self.listener.input.send(Input::Resize(s));
         Ok(())
     }

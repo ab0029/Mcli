@@ -101,6 +101,24 @@ fn hash_ansi_color(c: AnsiColor, h: &mut impl Hasher) {
     }
 }
 
+fn is_default_blank(cell: &Cell) -> bool {
+    cell.c == ' '
+        && cell.flags.is_empty()
+        && cell.fg == AnsiColor::Named(NamedColor::Foreground)
+        && cell.bg == AnsiColor::Named(NamedColor::Background)
+        && cell.underline_color().is_none()
+        && cell.zerowidth().is_none()
+}
+
+fn trim_trailing_default_blanks(cells: &mut Vec<Cell>, block: Option<usize>) {
+    let min_len = block.map_or(0, |x| x + 1).min(cells.len());
+    let mut end = cells.len();
+    while end > min_len && is_default_blank(&cells[end - 1]) {
+        end -= 1;
+    }
+    cells.truncate(end);
+}
+
 fn hash_row(cells: &[Cell], block: Option<usize>) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cells.len().hash(&mut h);
@@ -325,10 +343,11 @@ impl Screen {
             self.snapshots.resize_with(lines, || None);
         }
         let mut rows_changed = false;
-        for (y, cells) in updates {
+        for (y, mut cells) in updates {
             let block = self.caret.and_then(|(x, cy, shape)| {
                 (cy as usize == y && shape == CursorShape::Block).then_some(x as usize)
             });
+            trim_trailing_default_blanks(&mut cells, block);
             if self.snapshots[y]
                 .as_ref()
                 .is_some_and(|(prev_cells, prev_block)| {
@@ -683,5 +702,42 @@ mod tests {
         assert!(Rc::ptr_eq(&row1, &screen.rows[0]));
         assert!(Rc::ptr_eq(&row2, &screen.rows[1]));
         assert!(Rc::ptr_eq(&row3, &screen.rows[2]));
+    }
+
+    #[test]
+    fn horizontal_resize_reuses_cached_rows_when_only_trailing_blanks_change() {
+        let mut screen = Screen::default();
+        let narrow = Size {
+            cols: 40,
+            lines: 4,
+            cell_w: 9,
+            cell_h: 19,
+        };
+        let wide = Size { cols: 90, ..narrow };
+        let config = Config {
+            default_cursor_style: CursorStyle {
+                shape: CursorShape::Beam,
+                ..CursorStyle::default()
+            },
+            ..Config::default()
+        };
+        let mut term = Term::new(config, &narrow, VoidListener);
+        Processor::<StdSyncHandler>::new().advance(
+            &mut term,
+            "短标题行\r\nPS L:\\AI\\Mcli> cargo test".as_bytes(),
+        );
+        assert!(screen.refresh_term(&mut term, true, 9., 1.));
+        let row0 = Rc::clone(&screen.rows[0]);
+        let row1 = Rc::clone(&screen.rows[1]);
+        term.resize(wide);
+        let _ = screen.refresh_term(&mut term, true, 9., 1.);
+        assert!(
+            Rc::ptr_eq(&row0, &screen.rows[0]),
+            "水平扩宽后未折行行 0 应复用缓存 GridRow"
+        );
+        assert!(
+            Rc::ptr_eq(&row1, &screen.rows[1]),
+            "水平扩宽后未折行行 1 应复用缓存 GridRow"
+        );
     }
 }

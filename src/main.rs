@@ -60,9 +60,9 @@ impl Workspace {
         {
             tx.wake_after(wait);
             tx.live_only();
-        } else if self.apply_grid_size(size) || metrics_changed {
+        } else if self.apply_grid_size(size, tx.clock(), tx) || metrics_changed {
             self.layout.clear_pending_window_size(tx.clock());
-            if self.force {
+            if self.force && self.resize_fallback_due.is_none() {
                 self.refresh_active_screen(true);
             }
             tx.instant();
@@ -71,19 +71,34 @@ impl Workspace {
         }
     }
 
-    fn apply_grid_size(&mut self, size: terminal::Size) -> bool {
+    fn apply_grid_size(&mut self, size: terminal::Size, clock: f64, tx: &mut Tx) -> bool {
         if size == self.size {
             return false;
         }
         self.size = size;
-        if let Some(i) = self.active_index()
+        let defer_paint = if let Some(i) = self.active_index()
             && let Some(s) = &self.tabs[i].session
-            && let Err(e) = s.resize(size)
         {
-            self.tabs[i].error = Some(format!("终端尺寸更新失败：{e}"));
-        }
+            if let Err(e) = s.resize(size) {
+                self.tabs[i].error = Some(format!("终端尺寸更新失败：{e}"));
+                false
+            } else {
+                // Keep the previous complete frame briefly while ConPTY + PowerShell/TUI finish
+                // their clear+redraw burst, then paint the settled frame in one step (no flash).
+                self.tabs[i].ended.is_none() && !self.screen.rows.is_empty()
+            }
+        } else {
+            false
+        };
         self.force = true;
-        self.refresh_active_screen(true);
+        if defer_paint {
+            const RESIZE_FALLBACK: std::time::Duration = std::time::Duration::from_millis(75);
+            self.resize_fallback_due = Some(clock + RESIZE_FALLBACK.as_secs_f64());
+            tx.wake_after(RESIZE_FALLBACK);
+        } else {
+            self.resize_fallback_due = None;
+            self.refresh_active_screen(true);
+        }
         true
     }
     fn cell_at(&self, x: f32, y: f32) -> (u16, u16, bool) {
@@ -527,11 +542,14 @@ fn app() -> rune::App<Workspace> {
         poll: Some(Workspace::poll),
         ..AppSpec::new("Mcli", (1040., 640.), Workspace::open, workspace_view)
     };
-    rune::App::new(spec)
+    let app = rune::App::new(spec)
         .titlebar(rune::Titlebar::new(window_frame::HEIGHT))
         .on_ime(Workspace::ime)
         .on_close(Workspace::on_close_window)
-        .on_quit(Workspace::on_quit_app)
+        .on_quit(Workspace::on_quit_app);
+    #[cfg(all(windows, not(test)))]
+    let app = app.on_window(window_frame::install_win10_frame_fix);
+    app
 }
 
 fn main() {

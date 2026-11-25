@@ -28,7 +28,8 @@ const MAX_WIDTH: f32 = 420.;
 pub const GRIP: f32 = 8.;
 pub const DRAWER: f32 = 280.;
 const REFLOW_PAUSE: std::time::Duration = std::time::Duration::from_millis(180);
-const WINDOW_RESIZE_COOLDOWN: std::time::Duration = std::time::Duration::from_millis(90);
+const WINDOW_RESIZE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(140);
+const WINDOW_RESIZE_QUIET: f64 = 0.28;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShortcutAction {
@@ -594,14 +595,18 @@ impl Layout {
             self.pending_window_size = None;
             return None;
         }
-        let cooldown = WINDOW_RESIZE_COOLDOWN.as_secs_f64();
-        if let Some(last) = self.last_window_resize
-            && clock >= last
-            && clock - last < cooldown
-        {
-            let due = last + cooldown;
+        let dragging_window = self.pending_window_size.is_some()
+            || self
+                .last_window_resize
+                .is_some_and(|last| clock >= last && clock - last < WINDOW_RESIZE_QUIET);
+        if dragging_window {
+            // Debounce continuous window-border drags until the user briefly pauses,
+            // avoiding repeated ConPTY reflow storms mid-drag while keeping discrete
+            // maximize/restore snaps instantaneous.
+            self.last_window_resize = Some(clock);
+            let due = clock + WINDOW_RESIZE_DEBOUNCE.as_secs_f64();
             self.pending_window_size = Some((target, due));
-            return Some(std::time::Duration::from_secs_f64((due - clock).max(0.001)));
+            return Some(WINDOW_RESIZE_DEBOUNCE);
         }
         self.last_window_resize = Some(clock);
         self.pending_window_size = None;
@@ -644,7 +649,7 @@ impl Workspace {
                 return false;
             }
             drag.pending_size = None;
-            self.apply_grid_size(size);
+            self.apply_grid_size(size, clock, tx);
             return true;
         }
         let Some((size, due)) = self.layout.pending_window_size else {
@@ -655,7 +660,7 @@ impl Workspace {
             return false;
         }
         self.layout.clear_pending_window_size(clock);
-        self.apply_grid_size(size)
+        self.apply_grid_size(size, clock, tx)
     }
     fn save_pref(&mut self, update: PrefUpdate, label: &str) {
         let Some(path) = &self.layout.prefs_path else {
@@ -928,7 +933,7 @@ impl Workspace {
                         if d.clicks == 2 {
                             self.layout.preferred = None;
                         } else if let Some(size) = drag.pending_size {
-                            self.apply_grid_size(size);
+                            self.apply_grid_size(size, tx.clock(), tx);
                         }
                         if self.layout.preferred != drag.previous_width {
                             self.save_width();

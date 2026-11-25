@@ -37,6 +37,14 @@ struct PendingShell {
     ready_at: Instant,
 }
 
+struct PendingLast {
+    tab_id: SessionId,
+    count: usize,
+    generation: u64,
+    context_token: String,
+    deadline: Instant,
+}
+
 #[derive(Default)]
 pub struct ClawbotPanel {
     service: Option<Service>,
@@ -52,6 +60,7 @@ pub struct ClawbotPanel {
     pending_launch: Option<PendingLaunch>,
     pending_replies: HashMap<SessionId, PendingReply>,
     pending_shell: Option<PendingShell>,
+    pending_last: Option<PendingLast>,
     pending_startup_notice: Option<Instant>,
     startup_notice_sent: bool,
     last_tab_states: HashMap<SessionId, String>,
@@ -69,6 +78,7 @@ impl ClawbotPanel {
         self.service.take();
         self.pending_launch = None;
         self.pending_shell = None;
+        self.pending_last = None;
         self.pending_replies.clear();
     }
 }
@@ -183,6 +193,7 @@ impl Workspace {
         self.clawbot.bound_tab = None;
         self.clawbot.pending_replies.clear();
         self.clawbot.pending_launch = None;
+        self.clawbot.pending_last = None;
         self.clawbot
             .audit
             .push("解绑", "微信账号", "已清除本机加密凭据");
@@ -436,6 +447,12 @@ impl Workspace {
             self.clawbot.bound_tab = None;
             changed = true;
         }
+        if let Some(pending) = &self.clawbot.pending_last
+            && !live_ids.contains(&pending.tab_id)
+        {
+            self.clawbot.pending_last = None;
+            changed = true;
+        }
         changed
     }
 
@@ -582,6 +599,8 @@ impl Workspace {
         changed |= self.poll_clawbot_launch(tx);
         // Advance pending `/sh` settle capture.
         changed |= self.poll_clawbot_shell(tx);
+        // Advance pending `/last` transcript fetch timeout fallback.
+        changed |= self.poll_clawbot_last(tx);
         // Observe tab state transitions for completion / waiting / error replies.
         changed |= self.poll_clawbot_tab_transitions(tx);
         changed
@@ -638,9 +657,19 @@ impl Workspace {
                     if let Some((_, tab)) = live.iter().find(|(i, _)| *i == num) {
                         let id = tab.id;
                         let desc = format_tab_brief(num, tab, false);
+                        let is_agent = tab.foreground.is_some()
+                            || tab.bound.is_some()
+                            || tab.expected.is_some();
                         self.remember_bound_tab(id);
                         self.clawbot.audit.push("/use", desc.clone(), "已切换目标");
-                        self.clawbot_reply(&format!("已切换远程目标为：{desc}"), Some(ctx));
+                        let msg = if is_agent {
+                            format!(
+                                "已切换远程目标为：{desc}\n发送 /r 查看最后一条完整回复（/r 3 查看最近 3 轮）。"
+                            )
+                        } else {
+                            format!("已切换远程目标为：{desc}")
+                        };
+                        self.clawbot_reply(&msg, Some(ctx));
                     } else {
                         self.clawbot_reply(
                             &format!("未找到编号 {num}，请先发送 /list 查看有效编号。"),
@@ -650,13 +679,18 @@ impl Workspace {
                     return;
                 }
                 let q = query.to_lowercase();
-                let matches: Vec<(usize, SessionId, String)> = live
+                let matches: Vec<(usize, SessionId, String, bool)> = live
                     .into_iter()
                     .filter(|(_, tab)| {
                         tab.directory.to_string_lossy().to_lowercase().contains(&q)
                             || tab.label().to_lowercase().contains(&q)
                     })
-                    .map(|(i, tab)| (i, tab.id, format_tab_brief(i, tab, false)))
+                    .map(|(i, tab)| {
+                        let is_agent = tab.foreground.is_some()
+                            || tab.bound.is_some()
+                            || tab.expected.is_some();
+                        (i, tab.id, format_tab_brief(i, tab, false), is_agent)
+                    })
                     .collect();
                 match matches.as_slice() {
                     [] => {
@@ -665,15 +699,22 @@ impl Workspace {
                             Some(ctx),
                         );
                     }
-                    [(_, id, desc)] => {
+                    [(_, id, desc, is_agent)] => {
                         self.remember_bound_tab(*id);
                         self.clawbot.audit.push("/use", desc.clone(), "已切换目标");
-                        self.clawbot_reply(&format!("已切换远程目标为：{desc}"), Some(ctx));
+                        let msg = if *is_agent {
+                            format!(
+                                "已切换远程目标为：{desc}\n发送 /r 查看最后一条完整回复（/r 3 查看最近 3 轮）。"
+                            )
+                        } else {
+                            format!("已切换远程目标为：{desc}")
+                        };
+                        self.clawbot_reply(&msg, Some(ctx));
                     }
                     many => {
                         let mut lines =
                             vec![format!("匹配到 {} 个终端，请用编号精确选择：", many.len())];
-                        for (_, _, desc) in many {
+                        for (_, _, desc, _) in many {
                             lines.push(desc.clone());
                         }
                         self.clawbot_reply(&lines.join("\n"), Some(ctx));
@@ -704,12 +745,20 @@ impl Workspace {
                     {
                         lines.push(format!("整机状态：{summary}"));
                     }
+                    if tab.foreground.is_some() || tab.bound.is_some() || tab.expected.is_some() {
+                        lines.push(
+                            "快捷查看：发送 /r 读取最后一条完整回复（/r 3 读取最近 3 轮）。".into(),
+                        );
+                    }
                     lines.join("\n")
                 } else {
                     format!("尚未绑定终端。{}", self.bound_description())
                 };
                 self.clawbot.audit.push("/status", "当前目标", "返回状态");
                 self.clawbot_reply(&reply, Some(ctx));
+            }
+            ParsedCommand::Last { count } => {
+                self.handle_clawbot_last(count, ctx, tx);
             }
             ParsedCommand::Proxy { target, restart } => {
                 self.handle_clawbot_proxy(target, restart, ctx, tx);
@@ -1712,5 +1761,258 @@ impl Workspace {
             .audit
             .push("完成回传", format!("{dir} · {label}"), "末屏快照");
         self.clawbot_reply(&body, ctx);
+    }
+
+    fn handle_clawbot_last(&mut self, count: usize, ctx: String, tx: &mut Tx) {
+        let Some(tab) = self.bound_tab_ref() else {
+            self.clawbot_reply(
+                "当前未绑定终端，请先发送 /list 并用 /use <编号> 选择目标终端。",
+                Some(ctx),
+            );
+            return;
+        };
+        let tab_id = tab.id;
+        let label = tab.label();
+        let dir_name = tab
+            .directory
+            .file_name()
+            .unwrap_or(tab.directory.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        let key = tab.bound.clone().or_else(|| tab.expected.clone());
+        if let (Some(key), Some(history)) = (key, self.history.service.as_ref()) {
+            self.clawbot.reply_gen = self.clawbot.reply_gen.wrapping_add(1);
+            let generation = self.clawbot.reply_gen;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            self.clawbot.pending_last = Some(PendingLast {
+                tab_id,
+                count,
+                generation,
+                context_token: ctx,
+                deadline,
+            });
+            let _ = history.send.send(crate::history::Command::RecentTurns(
+                key,
+                tab_id,
+                count.saturating_add(1),
+                generation,
+            ));
+            tx.wake_after(Duration::from_secs(2));
+            self.clawbot.audit.push(
+                "/last",
+                format!("{dir_name} · {label}"),
+                format!("读取最近 {count} 轮"),
+            );
+        } else {
+            self.clawbot.audit.push(
+                "/last",
+                format!("{dir_name} · {label}"),
+                "未关联官方对话，回退末屏",
+            );
+            self.deliver_last_screen_fallback(tab_id, ctx, "当前终端未关联官方 Agent 对话");
+        }
+    }
+
+    fn poll_clawbot_last(&mut self, tx: &mut Tx) -> bool {
+        let Some(deadline) = self.clawbot.pending_last.as_ref().map(|p| p.deadline) else {
+            return false;
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            if let Some(pending) = self.clawbot.pending_last.take() {
+                self.deliver_last_screen_fallback(
+                    pending.tab_id,
+                    pending.context_token,
+                    "读取官方对话超时",
+                );
+            }
+            true
+        } else {
+            tx.wake_after(deadline - now);
+            false
+        }
+    }
+
+    pub fn on_clawbot_recent_turns(
+        &mut self,
+        tab_id: SessionId,
+        generation: u64,
+        result: Result<Vec<crate::transcript::Turn>, String>,
+    ) {
+        let matches = self
+            .clawbot
+            .pending_last
+            .as_ref()
+            .is_some_and(|p| p.tab_id == tab_id && p.generation == generation);
+        if !matches {
+            return;
+        }
+        let Some(pending) = self.clawbot.pending_last.take() else {
+            return;
+        };
+        let (dir_name, label, is_running) = self
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .map(|t| {
+                let dir = t
+                    .directory
+                    .file_name()
+                    .unwrap_or(t.directory.as_os_str())
+                    .to_string_lossy()
+                    .into_owned();
+                (dir, t.label(), t.state_text() == "运行中")
+            })
+            .unwrap_or_else(|| ("工作区".into(), "Agent".into(), false));
+
+        let turns = match result {
+            Ok(turns) if !turns.is_empty() => turns,
+            Ok(_) => {
+                self.deliver_last_screen_fallback(
+                    tab_id,
+                    pending.context_token,
+                    "暂未在官方记录中找到已完成回复",
+                );
+                return;
+            }
+            Err(_) => {
+                self.deliver_last_screen_fallback(
+                    tab_id,
+                    pending.context_token,
+                    "读取官方对话记录失败",
+                );
+                return;
+            }
+        };
+
+        if pending.count <= 1 {
+            if let Some(reply) = turns
+                .last()
+                .and_then(|t| t.reply.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let header = format!("💬 {dir_name} · {label} 最新回复：");
+                self.clawbot.audit.push(
+                    "/last",
+                    format!("{dir_name} · {label}"),
+                    format!("结构化回传 {} 字符", reply.chars().count()),
+                );
+                self.clawbot_reply(&format!("{header}\n\n{reply}"), Some(pending.context_token));
+                return;
+            }
+            if turns.len() >= 2
+                && let Some(prev) = turns[turns.len() - 2]
+                    .reply
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            {
+                let status_note = if is_running {
+                    "当前正在生成新回复"
+                } else {
+                    "最新一轮尚未写出完整回复"
+                };
+                let latest_q = crate::transcript::snippet(&turns.last().unwrap().prompt);
+                let header = if latest_q.is_empty() {
+                    format!("⏳ {dir_name} · {label} {status_note}，以下为上一轮已完成回复：")
+                } else {
+                    format!(
+                        "⏳ {dir_name} · {label} {status_note}（最新提问：{latest_q}），以下为上一轮已完成回复："
+                    )
+                };
+                self.clawbot.audit.push(
+                    "/last",
+                    format!("{dir_name} · {label}"),
+                    format!("生成中回退上一轮 {} 字符", prev.chars().count()),
+                );
+                self.clawbot_reply(&format!("{header}\n\n{prev}"), Some(pending.context_token));
+                return;
+            }
+            self.deliver_last_screen_fallback(
+                tab_id,
+                pending.context_token,
+                if is_running {
+                    "Agent 正在生成首条回复，尚未写入官方记录"
+                } else {
+                    "官方对话尚无已完成回复"
+                },
+            );
+            return;
+        }
+
+        let start = turns.len().saturating_sub(pending.count);
+        let slice = &turns[start..];
+        let total = slice.len();
+        let mut sections = vec![format!("💬 {dir_name} · {label} 最近 {total} 轮对话：")];
+        for (idx, turn) in slice.iter().enumerate() {
+            let prompt_text = truncate_chars(turn.prompt.trim(), 400);
+            let prompt_display = if prompt_text.is_empty() {
+                "（无提问记录）".to_owned()
+            } else {
+                prompt_text
+            };
+            let reply_display = match turn
+                .reply
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(r) => r.to_owned(),
+                None if idx + 1 == total && is_running => "（正在生成中…）".to_owned(),
+                None => "（暂无完整回复）".to_owned(),
+            };
+            sections.push(format!(
+                "【第 {}/{total} 轮】\n问：{prompt_display}\n答：{reply_display}",
+                idx + 1
+            ));
+        }
+        let body = sections.join("\n\n");
+        self.clawbot.audit.push(
+            "/last",
+            format!("{dir_name} · {label}"),
+            format!("返回最近 {total} 轮（{} 字符）", body.chars().count()),
+        );
+        self.clawbot_reply(&body, Some(pending.context_token));
+    }
+
+    fn deliver_last_screen_fallback(&mut self, tab_id: SessionId, ctx: String, reason: &str) {
+        let Some(tab) = self.tabs.iter().find(|t| t.id == tab_id && !t.closing) else {
+            self.clawbot_reply(&format!("ℹ️ {reason}，目标终端已关闭。"), Some(ctx));
+            return;
+        };
+        let label = tab.label();
+        let dir_name = tab
+            .directory
+            .file_name()
+            .unwrap_or(tab.directory.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        let snap = tab
+            .session
+            .as_ref()
+            .map(|s| s.screen_snapshot(35))
+            .unwrap_or_default();
+        let body = if !snap.is_empty() {
+            format!("ℹ️ {reason}，已回退为 {dir_name} · {label} 末屏快照：\n{snap}")
+        } else if !tab.preview.trim().is_empty() {
+            format!(
+                "ℹ️ {reason}，{dir_name} · {label} 当前摘要：\n{}",
+                tab.preview.trim()
+            )
+        } else {
+            format!("ℹ️ {reason}，且当前终端屏幕为空。")
+        };
+        self.clawbot_reply(&body, Some(ctx));
+    }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
     }
 }

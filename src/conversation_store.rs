@@ -183,6 +183,13 @@ impl Store {
         Ok(transcript::latest_reply(&self.roots, key, &path)?)
     }
 
+    pub fn recent_turns(&self, key: &Key, limit: usize) -> Result<Vec<transcript::Turn>> {
+        let Some(path) = self.source(key)? else {
+            return Ok(Vec::new());
+        };
+        Ok(transcript::recent_turns(&self.roots, key, &path, limit)?)
+    }
+
     /// Search the official text in small descending batches. The index supplies verified
     /// offsets; the complete text is never duplicated in SQLite.
     pub fn search_batch(

@@ -586,6 +586,13 @@ pub fn body_at(
     }
 }
 
+/// Structured prompt/reply turn extracted read-only from an official transcript.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Turn {
+    pub prompt: String,
+    pub reply: Option<String>,
+}
+
 /// Read-only extraction of the latest assistant reply text after the last user prompt.
 /// Handles all four official formats (Codex `task_complete`, agy `PLANNER_RESPONSE`,
 /// Kimi `context.append_message`, and Grok streaming `agent_message_chunk`).
@@ -629,4 +636,78 @@ pub fn latest_reply(roots: &Roots, key: &Key, source: &Path) -> io::Result<Optio
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty()))
     }
+}
+
+/// Read-only extraction of the most recent `limit` prompt/reply turns from an official transcript.
+/// Preserves an in-progress trailing turn (`reply: None`) so callers can distinguish
+/// "currently generating" from "no completed replies" and still inspect the previous reply.
+pub fn recent_turns(
+    roots: &Roots,
+    key: &Key,
+    source: &Path,
+    limit: usize,
+) -> io::Result<Vec<Turn>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut reader = BufReader::new(File::open(roots.path(key, source)?)?);
+    let mut line = Vec::new();
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut grok_chunks = String::new();
+    let is_grok = key.agent == "grok";
+
+    let set_reply = |turns: &mut Vec<Turn>, text: String| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let owned = trimmed.to_owned();
+        if let Some(last) = turns.last_mut() {
+            last.reply = Some(owned);
+        } else {
+            turns.push(Turn {
+                prompt: String::new(),
+                reply: Some(owned),
+            });
+        }
+    };
+
+    while next_row(&mut reader, &mut line)? {
+        let Ok(parsed) = parse(key, &line) else {
+            continue;
+        };
+        match parsed {
+            Row::Prompt(prompt) => {
+                if is_grok && !grok_chunks.is_empty() {
+                    let flushed = std::mem::take(&mut grok_chunks);
+                    set_reply(&mut turns, flushed);
+                }
+                turns.push(Turn {
+                    prompt: prompt.text.trim().to_owned(),
+                    reply: None,
+                });
+            }
+            Row::Reply(text) => {
+                if is_grok {
+                    grok_chunks.push_str(&text);
+                } else {
+                    set_reply(&mut turns, text);
+                }
+            }
+            Row::Complete(Some(text)) => {
+                set_reply(&mut turns, text);
+            }
+            _ => (),
+        }
+    }
+
+    if is_grok && !grok_chunks.is_empty() {
+        let flushed = std::mem::take(&mut grok_chunks);
+        set_reply(&mut turns, flushed);
+    }
+
+    if turns.len() > limit {
+        turns.drain(..turns.len() - limit);
+    }
+    Ok(turns)
 }

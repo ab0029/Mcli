@@ -523,6 +523,7 @@ pub(super) struct Workspace {
     pub focus_generation: u64,
     pub focus_handoff: Option<SessionId>,
     pub force: bool,
+    pub resize_fallback_due: Option<f64>,
     pub mouse_down: bool,
     pub last_cell: Option<(u16, u16)>,
     pub last_drag: Option<(u16, u16, bool)>,
@@ -564,6 +565,7 @@ impl Workspace {
             focus_generation: 0,
             focus_handoff: None,
             force: true,
+            resize_fallback_due: None,
             mouse_down: false,
             last_cell: None,
             last_drag: None,
@@ -683,6 +685,7 @@ impl Workspace {
             self.active = id;
             self.reset_drawer();
             self.force = true;
+            self.resize_fallback_due = None;
             if let Some(i) = self.active_index()
                 && let Some(s) = &self.tabs[i].session
             {
@@ -1039,10 +1042,21 @@ impl Workspace {
         }
         if let Some(i) = self.active_index()
             && let Some(s) = &self.tabs[i].session
-            && (s.listener.dirty.swap(false, Ordering::AcqRel) || self.force)
         {
-            changed |= self.screen.refresh(s, self.force, self.cell, self.scale);
-            self.force = false;
+            let dirty = s.listener.dirty.swap(false, Ordering::AcqRel);
+            let due_now = self.resize_fallback_due.is_some_and(|due| clock >= due);
+            let holding = self.resize_fallback_due.is_some() && !dirty && !due_now;
+            if holding {
+                if let Some(due) = self.resize_fallback_due {
+                    tx.wake_after(std::time::Duration::from_secs_f64((due - clock).max(0.001)));
+                }
+            } else if dirty || self.force || due_now {
+                self.resize_fallback_due = None;
+                changed |= self
+                    .screen
+                    .refresh(s, self.force || due_now, self.cell, self.scale);
+                self.force = false;
+            }
         }
         changed |= self.poll_history(tx);
         changed |= self.poll_clawbot(clock, tx);

@@ -327,6 +327,10 @@ impl Workspace {
                     self.on_clawbot_latest_reply(tab_id, generation, result);
                     changed = true;
                 }
+                Update::RecentTurns(tab_id, generation, result) => {
+                    self.on_clawbot_recent_turns(tab_id, generation, result);
+                    changed = true;
+                }
                 Update::Search(key, generation, mut entries, finished, error)
                     if self.history.open
                         && self.history.key.as_ref() == Some(&key)

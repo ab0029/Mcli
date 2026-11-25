@@ -1083,3 +1083,28 @@ fn agent_completion_sound_respects_background_mode_waiting_and_persists() {
     assert_eq!(reloaded.sound.preset, crate::sound::SoundPreset::Notify);
     assert!(!reloaded.sound.on_waiting);
 }
+
+#[test]
+fn window_resize_debounces_continuous_drag_but_applies_discrete_snap_immediately() {
+    let mut layout = crate::workbench::Layout::new(rune::prefs::Prefs::memory());
+    let base = Size {
+        cols: 80,
+        lines: 24,
+        ..Size::default()
+    };
+    let s1 = Size { cols: 90, ..base };
+    let s2 = Size { cols: 100, ..base };
+    let s3 = Size { cols: 112, ..base };
+
+    // First discrete resize (e.g. maximize/snap) applies immediately.
+    assert!(layout.queue_window_size(s1, base, 1.0).is_none());
+
+    // Continuous drag frames within the quiet window are debounced (never firing mid-drag).
+    assert!(layout.queue_window_size(s2, s1, 1.05).is_some());
+    assert!(layout.queue_window_size(s3, s1, 1.15).is_some());
+    assert!(layout.queue_window_size(s3, s1, 1.25).is_some());
+
+    // After pausing > 280ms and clearing pending state, a new discrete snap applies immediately again.
+    layout.clear_pending_window_size(1.40);
+    assert!(layout.queue_window_size(base, s3, 1.80).is_none());
+}
