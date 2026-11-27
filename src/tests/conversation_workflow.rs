@@ -17,15 +17,14 @@ impl Scene {
         Self::open_with_database(project, root, db)
     }
     fn open_with_database(project: PathBuf, root: PathBuf, db: PathBuf) -> Self {
+        Self::open_with_roots(project, root, db, Roots::installed().unwrap())
+    }
+    fn open_with_roots(project: PathBuf, root: PathBuf, db: PathBuf, roots: Roots) -> Self {
         std::fs::create_dir_all(&root).unwrap();
         let mut rt = app().headless_runtime((1120., 720.), rune::Env::new(true, 1.));
         rt.update(|w, _| {
             w.first_open = false;
-            w.history.service = Some(Service::start(
-                db.clone(),
-                Roots::installed().unwrap(),
-                w.wake.clone(),
-            ));
+            w.history.service = Some(Service::start(db.clone(), roots, w.wake.clone()));
         });
         Self {
             rt,
@@ -242,6 +241,120 @@ impl Scene {
             self.send(id, b"\r");
         }
     }
+}
+
+#[test]
+#[ignore = "启动本机安装的官方 Codex，在独立配置和回环模型地址下核对 /clear"]
+fn official_codex_clear_without_title_id_or_hooks() {
+    let (root, roots, db) = super::conversation_index::fixture("native-codex-clear");
+    let project = root.join("project");
+    std::fs::create_dir(&project).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&project)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(
+        roots.codex.join("config.toml"),
+        format!(
+            r#"
+model = "gpt-5.4"
+model_provider = "local"
+approval_policy = "never"
+sandbox_mode = "read-only"
+check_for_update_on_startup = false
+[model_providers.local]
+name = "Local fixture"
+base_url = "http://127.0.0.1:1/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+[tui]
+terminal_title = ["project-name"]
+[projects.'{}']
+trust_level = "trusted"
+"#,
+            project.to_string_lossy().replace('/', "\\").to_lowercase()
+        ),
+    )
+    .unwrap();
+    let home = shell_quote(&roots.codex);
+    let mut scene = Scene::open_with_roots(project, root, db.clone(), roots.clone());
+    let tab = scene.spawn();
+    scene.line(tab, &format!("$env:CODEX_HOME = {home}"));
+    scene.line(tab, "codex --no-daemon");
+    let ready = |view: &str| {
+        view.contains("OpenAI Codex") && view.lines().any(|l| l.trim_start().starts_with("› "))
+    };
+    scene.until(tab, "open-test-project", 40, |_, view| {
+        view.contains("Trust this folder?") || ready(view)
+    });
+    if frame(scene.tab(tab).session.as_ref().unwrap()).contains("Trust this folder?") {
+        scene.send(tab, b"\r");
+    }
+    scene.until(tab, "codex-ready", 40, |_, view| ready(view));
+    let submit = |scene: &mut Scene, text| {
+        scene.line(tab, text);
+        scene.submit_pending_codex_draft(tab, text);
+    };
+    submit(&mut scene, "first local prompt");
+    scene.until(tab, "start-first-thread", 30, |t, v| {
+        t.prompt_count == 1 || v.contains("Trust this folder?")
+    });
+    if scene.tab(tab).prompt_count == 0 {
+        scene.send(tab, b"\r");
+    }
+    scene.until(tab, "old-thread", 25, |t, _| t.prompt_count == 1);
+    let old = scene.tab(tab).bound.clone().unwrap();
+    scene.press("footprint-toggle");
+    super::history_ui::shown(&mut scene.rt, scene.clock, "copy-prompt-1");
+    scene.send(tab, b"\x1b");
+    scene.until(tab, "first-turn-ended", 25, |t, v| {
+        matches!(t.phase.as_str(), "已打断" | "出错" | "就绪")
+            || v.contains("Conversation interrupted")
+    });
+    submit(&mut scene, "/clear");
+    scene.until(tab, "fresh-thread", 20, |t, _| {
+        t.bound.is_none() && t.preview.is_empty()
+    });
+    assert!(scene.rt.presented("copy-prompt-1").is_none());
+    submit(&mut scene, "new local prompt");
+    scene.until(tab, "new-prompt", 30, |t, _| {
+        t.bound.as_ref().is_some_and(|k| k != &old) && t.prompt_count == 1
+    });
+    super::history_ui::shown(&mut scene.rt, scene.clock, "copy-prompt-1");
+    let store = Store::open(&db, roots).unwrap();
+    assert_eq!(store.text(&old, 1).unwrap(), "first local prompt");
+    let second = scene.tab(tab).bound.clone().unwrap();
+    assert_eq!(store.text(&second, 1).unwrap(), "new local prompt");
+    scene.send(tab, b"\x1b");
+    scene.until(tab, "second-turn-ended", 25, |t, v| {
+        matches!(t.phase.as_str(), "已打断" | "出错" | "就绪")
+            || v.contains("Conversation interrupted")
+    });
+    submit(&mut scene, "/new");
+    scene.until(tab, "choose-workspace", 25, |t, v| {
+        t.bound.is_none() || v.contains("Use current Git worktree")
+    });
+    if scene.tab(tab).bound.is_some() {
+        scene.send(tab, b"\r");
+    }
+    scene.until(tab, "new-thread", 25, |t, _| {
+        t.bound.is_none() && t.preview.is_empty()
+    });
+    submit(&mut scene, "third local prompt");
+    scene.until(tab, "third-prompt", 25, |t, _| {
+        t.bound.as_ref().is_some_and(|k| k != &old && k != &second) && t.prompt_count == 1
+    });
+    assert_eq!(
+        store
+            .text(scene.tab(tab).bound.as_ref().unwrap(), 1)
+            .unwrap(),
+        "third local prompt"
+    );
 }
 fn workflow(agent: Agent, binary: &str) {
     let unique = std::time::SystemTime::now()

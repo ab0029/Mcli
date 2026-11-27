@@ -22,6 +22,8 @@ pub enum Command {
     },
     Leave(String),
     TuiReady(String, String),
+    FreshSession(String, String, u64),
+    SubmittedPrompt(String, String, i64, crate::terminal::PromptWitness),
     Agy(String, String, u64, AgyEvent),
     CodexTitle(String, String, (String, Option<String>)),
     Page(Key, usize, u64),
@@ -198,7 +200,7 @@ impl Service {
                         crate::hook_wire::timestamp_micros(),
                     );
                 }
-                worker.probe_unbound_slots();
+                dirty |= worker.probe_unbound_slots();
                 worker.catalog.poll();
                 if let Some(source) = worker.catalog.pending.pop_front()
                     && worker
@@ -264,6 +266,8 @@ struct Running {
     displayed: Option<Key>,
     codex_prefix: Option<String>,
     retired: HashSet<Key>,
+    fresh: bool,
+    prompt_witness: Option<(i64, crate::terminal::PromptWitness)>,
     path: Option<PathBuf>,
     changed_at: u64,
     turn: Option<String>,
@@ -340,6 +344,8 @@ impl Running {
             displayed: None,
             codex_prefix: None,
             retired: HashSet::new(),
+            fresh: false,
+            prompt_witness: None,
             path: None,
             changed_at: 0,
             turn: None,
@@ -422,6 +428,36 @@ impl Running {
             self.requested = true;
         }
     }
+    fn fresh_session(&mut self, sent: u64, notify: &dyn Fn(Update)) {
+        if sent < self.changed_at {
+            return;
+        }
+        if let Some(old) = self.bound.take() {
+            self.retired.insert(old);
+        }
+        self.retired.extend(self.initial.take());
+        self.retired.extend(self.restore.take());
+        self.fresh = true;
+        self.prompt_witness = None;
+        self.codex_prefix = None;
+        self.displayed = None;
+        self.path = None;
+        self.signature = None;
+        self.previous = None;
+        self.state = None;
+        self.turn = None;
+        self.stop = None;
+        if !self.osc7501_active {
+            self.meter = None;
+        }
+        self.composer_idle_at = 0;
+        self.changed_at = sent;
+        self.last_event = sent;
+        self.started_ms = (sent / 1000) as i64;
+        self.started_sys = SystemTime::UNIX_EPOCH + Duration::from_micros(sent);
+        self.next_probe = Instant::now();
+        notify(Update::Unbound(self.marker.clone(), self.run.clone()));
+    }
     fn notice(&mut self, n: Notice, roots: &Roots, notify: &dyn Fn(Update)) {
         let Some(key) = Key::new(&n.provider, &n.id) else {
             return;
@@ -439,7 +475,22 @@ impl Running {
         {
             return;
         }
-        if n.event == "Displayed" {
+        // These hooks identify a main thread by terminal, launch and full ID.
+        // Late notifications from a retired thread cannot reclaim the terminal.
+        let resume = n.event == "SessionStart" && (n.detail == "resume" || key.agent == "agy");
+        if self.bound.as_ref() != Some(&key)
+            && self.retired.contains(&key)
+            && n.event != "Displayed"
+            && !resume
+        {
+            return;
+        }
+        if matches!(n.event.as_str(), "SessionStart" | "UserPromptSubmit")
+            && self.bound.as_ref() != Some(&key)
+        {
+            self.codex_prefix = None;
+            self.displayed = Some(key.clone());
+        } else if n.event == "Displayed" {
             self.displayed = Some(key.clone());
         } else if self
             .codex_prefix
@@ -461,17 +512,14 @@ impl Running {
             ) {
                 return;
             }
-            if self.retired.contains(&key)
-                && n.event != "Displayed"
-                && n.event != "SessionStart"
-                && n.event != "UserPromptSubmit"
-            {
-                return;
-            }
             if let Some(old) = self.bound.replace(key.clone()) {
                 self.retired.insert(old);
+                self.initial = None;
+                self.restore = None;
             }
             self.retired.remove(&key);
+            self.fresh = false;
+            self.prompt_witness = None;
             self.path = None;
             self.signature = None;
             self.state = Some("状态未知".into());
@@ -920,20 +968,26 @@ impl Worker<'_> {
                 if let Some(slot) = self.live.get_mut(&marker)
                     && slot.run == run
                     && slot.agent == "agy"
-                    && sent >= slot.changed_at
+                    && slot.bound.is_some()
                 {
-                    if let Some(old) = slot.bound.take() {
-                        slot.retired.insert(old);
-                    }
-                    slot.displayed = None;
-                    slot.previous = None;
-                    slot.path = None;
-                    if !slot.osc7501_active {
-                        slot.meter = None;
-                    }
-                    slot.stop = None;
-                    slot.changed_at = sent;
-                    (self.notify)(Update::Unbound(marker, run));
+                    slot.fresh_session(sent, self.notify);
+                }
+            }
+            Command::FreshSession(marker, run, sent) => {
+                if let Some(slot) = self.live.get_mut(&marker)
+                    && slot.run == run
+                    && slot.agent == "codex"
+                {
+                    slot.fresh_session(sent, self.notify);
+                }
+            }
+            Command::SubmittedPrompt(marker, run, sent_ms, witness) => {
+                if let Some(slot) = self.live.get_mut(&marker)
+                    && slot.run == run
+                    && slot.fresh
+                {
+                    slot.prompt_witness = Some((sent_ms, witness));
+                    slot.next_probe = Instant::now();
                 }
             }
             Command::CodexTitle(marker, run, (prefix, id)) => {
@@ -1079,17 +1133,30 @@ impl Worker<'_> {
     // Bind unbound live CLIs passively without rewriting user command lines:
     // 1) App-restored tabs bind once the interactive TUI renders (or its official log updates).
     // 2) Fresh Codex/agy launches match newly created or updated official logs.
-    fn probe_unbound_slots(&mut self) {
+    fn probe_unbound_slots(&mut self) -> bool {
         const PROBE_INTERVAL: Duration = Duration::from_secs(1);
+        let mut dirty = false;
         let now = Instant::now();
         let mut claimed: HashSet<Key> = self
             .live
             .values()
             .filter_map(|slot| slot.bound.clone())
             .collect();
+        // Both terminals can submit before both rollouts have been flushed.
+        let mut pending = HashMap::new();
+        let mut shared = HashSet::new();
+        for slot in self.live.values() {
+            if let Some((_, witness)) = &slot.prompt_witness {
+                let submission = (crate::workspace::project_key(&slot.project), witness);
+                if let Some(other) = pending.insert(submission, &slot.marker) {
+                    shared.extend([other.clone(), slot.marker.clone()]);
+                }
+            }
+        }
         let mut matches = Vec::new();
         for slot in self.live.values_mut() {
-            if slot.bound.is_some() {
+            if slot.bound.is_some() || slot.codex_prefix.is_some() || shared.contains(&slot.marker)
+            {
                 continue;
             }
             let explicit = slot
@@ -1136,7 +1203,7 @@ impl Worker<'_> {
             }
             slot.next_probe = now + PROBE_INTERVAL;
             let found = if slot.agent == "codex" {
-                probe_codex(slot, &claimed, &self.roots, &self.store)
+                probe_codex(slot, &claimed, &self.roots, &mut self.store, &mut dirty)
             } else if slot.agent == "agy" {
                 probe_agy(slot, &claimed, &self.roots, &self.store)
             } else if slot.agent == "kimi" {
@@ -1161,6 +1228,7 @@ impl Worker<'_> {
         for (marker, run, agent, id, path) in matches {
             self.display(&marker, &run, &agent, id, path, sent);
         }
+        dirty
     }
 }
 
@@ -1177,62 +1245,92 @@ fn probe_codex(
     slot: &Running,
     claimed: &HashSet<Key>,
     roots: &Roots,
-    store: &Store,
+    store: &mut Store,
+    dirty: &mut bool,
 ) -> Option<(Key, Option<PathBuf>)> {
-    let min_new = slot
-        .started_sys
-        .checked_sub(Duration::from_secs(2))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let witness = if slot.fresh {
+        Some(slot.prompt_witness.as_ref()?)
+    } else {
+        None
+    };
+    let min_new = if witness.is_some() {
+        slot.started_sys
+    } else {
+        slot.started_sys
+            .checked_sub(Duration::from_secs(2))
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    };
+    let dirs = store.codex_recent_dirs().unwrap_or_default();
+    let known = store
+        .recent_sources("codex", &slot.project, 12)
+        .unwrap_or_default();
     let mut best: Option<(SystemTime, Key, PathBuf)> = None;
-    let mut consider = |mtime: SystemTime, key: Key, path: PathBuf| {
+    let mut ambiguous = false;
+    let mut seen = HashSet::new();
+    let mut consider = |key: Key, path: PathBuf, indexed: bool| {
+        if claimed.contains(&key) || slot.retired.contains(&key) || !seen.insert(path.clone()) {
+            return;
+        }
+        let Ok(meta) = path.metadata() else { return };
+        let Ok(mtime) = meta.modified() else { return };
+        let cutoff = if indexed { slot.started_sys } else { min_new };
+        if mtime < cutoff {
+            return;
+        }
+        if witness.is_some() && !meta.created().is_ok_and(|created| created >= min_new) {
+            return;
+        }
+        let Ok(path) = roots.path(&key, &path) else {
+            return;
+        };
+        if (!indexed || witness.is_some())
+            && !crate::discovery::codex_header(&path, &key)
+                .is_some_and(|cwd| same_project(&cwd, &slot.project))
+        {
+            return;
+        }
+        if let Some((sent_ms, witness)) = witness {
+            // Reuse the incremental index. A long rollout or a partial final
+            // JSON line is retried from the last committed offset.
+            let Ok(updated) = store.sync(&key, &slot.project, &path) else {
+                return;
+            };
+            *dirty |= updated;
+            if !store
+                .get(&key)
+                .ok()
+                .flatten()
+                .filter(|s| s.last_prompt_ms.is_some_and(|ms| ms >= sent_ms - 1000))
+                .and_then(|s| store.text(&key, s.count).ok())
+                .is_some_and(|text| witness.matches(&text))
+            {
+                return;
+            }
+            ambiguous |= best.as_ref().is_some_and(|(_, found, _)| found != &key);
+        }
         if best.as_ref().is_none_or(|(t, _, _)| mtime > *t) {
             best = Some((mtime, key, path));
         }
     };
-    if let Ok(dirs) = store.codex_recent_dirs() {
-        for dir in dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Some(key) = crate::discovery::rollout_key(&path) else {
-                    continue;
-                };
-                if claimed.contains(&key) || slot.retired.contains(&key) {
-                    continue;
-                }
-                let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
-                    continue;
-                };
-                if mtime < min_new {
-                    continue;
-                }
-                let Ok(verified) = roots.path(&key, &path) else {
-                    continue;
-                };
-                if crate::discovery::codex_header(&verified, &key)
-                    .is_some_and(|proj| same_project(&proj, &slot.project))
-                {
-                    consider(mtime, key, verified);
-                }
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(key) = crate::discovery::rollout_key(&path) {
+                consider(key, path, false);
             }
         }
     }
-    if let Ok(known) = store.recent_sources("codex", &slot.project, 12) {
-        for (key, path) in known {
-            if claimed.contains(&key) || slot.retired.contains(&key) {
-                continue;
-            }
-            if let Ok(mtime) = path.metadata().and_then(|m| m.modified())
-                && mtime >= slot.started_sys
-                && let Ok(verified) = roots.path(&key, &path)
-            {
-                consider(mtime, key, verified);
-            }
-        }
+    for (key, path) in known {
+        consider(key, path, true);
     }
-    best.map(|(_, key, path)| (key, Some(path)))
+    if ambiguous {
+        None
+    } else {
+        best.map(|(_, key, path)| (key, Some(path)))
+    }
 }
 
 fn probe_agy(

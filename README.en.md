@@ -22,6 +22,7 @@ Run multiple independent PowerShell sessions in a single window, automatically g
   - Tracks live states (`Running`, `Waiting for User`, `Ready`, `Error`) via native `OSC 7501` (including Kimi subagent aggregation) and Grok `OSC 0` titles, lighting an unread badge when a background agent finishes replying.
 - **Recent Tasks, Prompt Footprints & Auto-Resume**
   - Read-only discovery of official conversation logs under the current project and its subdirectories, with a floating right-hand drawer to browse, search, and copy full multi-line prompts without resizing the terminal or clearing selection.
+  - After `/clear` or `/new` in a Codex tab, the session tree and open prompt drawer follow the new conversation. If its ID is unavailable, they clear the old content until a submitted prompt uniquely matches an official transcript. The previous conversation stays in history.
   - Saves window layout and per-tab proxy overrides on exit and automatically resumes verified conversation IDs on reopen (with automatic retry up to 3 times on transient launch failure).
 - **Multi-Proxy Profiles & Quick Switch (Top Bar + Shell `mp` + Per-Agent Auto Proxy)**
   - Tracks per-terminal changes to `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` using Windows DPAPI user-scoped encryption.

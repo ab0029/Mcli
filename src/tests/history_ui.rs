@@ -290,6 +290,19 @@ $null = [Console]::ReadLine()
     shell_line(&mut rt, &format!("& {}", shell_quote(&exe)));
     wait_for_workspace(&mut rt, clock, |w| w.current().unwrap().run.is_some());
     let run = rt.state.current().unwrap().run.clone().unwrap();
+    rt.state
+        .history
+        .service
+        .as_ref()
+        .unwrap()
+        .send
+        .send(crate::history::Command::Agy(
+            id.marker(),
+            run.clone(),
+            1,
+            shell::AgyEvent::Thread(Some(a1.id.clone())),
+        ))
+        .unwrap();
     event(id, &run, &a1, &file, "SessionStart", 1);
     wait_for_workspace(&mut rt, clock, |w| w.current().unwrap().prompt_count == 2);
     event(id, &run, &a1, &file, "Stop", 2);
@@ -522,6 +535,126 @@ fn passive_binding_covers_explicit_resume_and_fresh_codex_and_agy_sessions() {
     );
     let s = wait_bound(&agy_marker, &agy_key);
     assert_eq!(s.preview, "全新 agy 对话");
+}
+
+#[test]
+fn codex_clear_switches_tree_and_open_drawer_without_an_id_in_the_title() {
+    let (dir, roots, db) = fixture("codex-clear");
+    let partition = crate::conversation_store::Store::open(&db, roots.clone())
+        .unwrap()
+        .codex_recent_dirs()
+        .unwrap()
+        .remove(0);
+    std::fs::create_dir_all(&partition).unwrap();
+    let old = key("codex", 41);
+    let new = key("codex", 42);
+    let external = key("codex", 43);
+    let times = rusqlite::Connection::open_in_memory().unwrap();
+    let accepted = |key: &Conversation, n, body: &str| {
+        let stamp: String = times
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        prompt(key, n, body, Some(&stamp))
+    };
+    let write_thread = |key: &Conversation, body: &str| {
+        let path = partition.join(format!("rollout-test-{}.jsonl", key.id));
+        put(
+            &path,
+            json!({"type":"session_meta","payload":{"id":key.id,"cwd":dir,"source":"cli"}}),
+        );
+        put(&path, accepted(key, 0, body));
+        path
+    };
+    let old_path = write_thread(&old, "原来的提问");
+    let mut store = crate::conversation_store::Store::open(&db, roots.clone()).unwrap();
+    while store.sync(&old, &dir, &old_path).unwrap() {}
+    let exe = dir.join("codex.ps1");
+    std::fs::write(
+        &exe,
+        r#"
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Write("OpenAI Codex (v0.172.0)`r`n› ")
+while ($null -ne ($line = [Console]::ReadLine())) {
+    if ($line -eq '/clear') {
+        [Console]::Write(([char]27 + '[2J' + [char]27 + '[H'))
+        [Console]::Write("OpenAI Codex (v0.172.0)`r`n")
+    }
+    [Console]::Write('› ')
+}
+"#,
+    )
+    .unwrap();
+    let mut rt = app().headless_runtime((1120., 720.), rune::Env::new(true, 1.));
+    rt.update(|w, _| {
+        w.first_open = false;
+        w.history.service = Some(Service::start(db.clone(), roots.clone(), w.wake.clone()));
+    });
+    let clock = Instant::now();
+    let tab_id = super::multiple::launch_profile_shell(&mut rt, &dir);
+    shell_line(
+        &mut rt,
+        &format!("& {} resume {}", shell_quote(&exe), old.id),
+    );
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().preview == "原来的提问"
+    });
+    press(&mut rt, "footprint-toggle", clock.elapsed().as_secs_f64());
+    shown(&mut rt, clock, "copy-prompt-1");
+    let send =
+        |rt: &rune::Runtime<Workspace>, bytes: &[u8]| rt.state.session().unwrap().input(bytes);
+    send(&rt, b"/clear");
+    wait_for_workspace(&mut rt, clock, |w| {
+        frame(w.session().unwrap()).contains("› /clear")
+    });
+    assert_eq!(rt.state.current().unwrap().bound.as_ref(), Some(&old));
+    send(&rt, b"\r");
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().bound.is_none() && w.current().unwrap().preview.is_empty()
+    });
+    assert!(rt.presented("copy-prompt-1").is_none());
+    put(&old_path, accepted(&old, 1, "旧对话迟到的提问"));
+    send(&rt, "相同开场".as_bytes());
+    wait_for_workspace(&mut rt, clock, |w| {
+        frame(w.session().unwrap()).contains("› 相同开场")
+    });
+    let external_path = write_thread(&external, "相同开场");
+    let new_path = write_thread(&new, "相同开场");
+    send(&rt, b"\r");
+    wait_for_workspace(&mut rt, clock, |_| {
+        [&new, &external]
+            .iter()
+            .all(|key| store.get(key).unwrap().is_some_and(|s| s.count == 1))
+    });
+    assert!(rt.state.current().unwrap().bound.is_none());
+    assert!(rt.presented("copy-prompt-1").is_none());
+    send(&rt, "新会话的提问".as_bytes());
+    wait_for_workspace(&mut rt, clock, |w| {
+        frame(w.session().unwrap()).contains("› 新会话的提问")
+    });
+    send(&rt, b"\r");
+    put(
+        &external_path,
+        accepted(&external, 1, "新会话的提问来自其他终端"),
+    );
+    put(&new_path, accepted(&new, 1, "新会话的提问"));
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().bound.as_ref() == Some(&new)
+            && w.current().unwrap().preview == "新会话的提问"
+    });
+    shown(&mut rt, clock, "copy-prompt-2");
+    let board = rune::clipboard::memory();
+    rt.use_clipboard(&board);
+    press(&mut rt, "copy-prompt-2", clock.elapsed().as_secs_f64());
+    wait_for_workspace(&mut rt, clock, |_| {
+        board.text().is_some_and(|t| t.as_str() == "新会话的提问")
+    });
+    assert_eq!(rt.state.active, Some(tab_id));
+    assert_eq!(store.text(&old, 1).unwrap(), "原来的提问");
+    press(&mut rt, "footprint-toggle", clock.elapsed().as_secs_f64());
+    shown(&mut rt, clock, &format!("task-codex-{}", new.id));
+    shown(&mut rt, clock, &format!("task-codex-{}", old.id));
 }
 
 #[test]

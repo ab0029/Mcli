@@ -270,7 +270,11 @@ impl Workspace {
                             changed = true;
                         }
                     }
+                    let new_key = tab.bound.as_ref() != Some(&key);
                     let new_count = tab.prompt_count != count;
+                    if new_key && let Some(session) = &tab.session {
+                        session.awaiting_codex_identity(false);
+                    }
                     if tab.bound.as_ref().is_some_and(|prior| prior != &key) {
                         tab.reset_reply();
                     }
@@ -287,7 +291,9 @@ impl Workspace {
                     tab.prompt_count = count;
                     let selected = Some(tab.id) == self.active;
                     let notified = tab.observe_reply(selected);
-                    if selected && new_count {
+                    if selected && new_key {
+                        self.reset_drawer();
+                    } else if selected && new_count {
                         self.history.count = count;
                         self.load_page();
                     }
@@ -369,14 +375,19 @@ impl Workspace {
                         .find(|t| t.id.marker() == marker && t.run.as_ref() == Some(&run))
                     {
                         changed = true;
-                        if tab.bound.take().is_some() {
-                            tab.cancel_restore();
+                        tab.bound = None;
+                        if let Some(session) = &tab.session {
+                            session.awaiting_codex_identity(true);
                         }
+                        tab.cancel_restore();
                         tab.preview.clear();
                         tab.phase.clear();
                         tab.prompt_count = 0;
                         tab.meter = None;
                         tab.reset_reply();
+                        if Some(tab.id) == self.active {
+                            self.reset_drawer();
+                        }
                     }
                 }
                 Update::Error(e) => {

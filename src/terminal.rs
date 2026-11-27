@@ -13,6 +13,26 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
+mod session_switch;
+pub use session_switch::PromptWitness;
+
+fn row_text<T>(term: &Term<T>, line: Line, start: usize) -> String {
+    use alacritty_terminal::term::cell::Flags;
+    let row = &term.grid()[line];
+    let mut text = String::with_capacity(term.columns());
+    for col in start..term.columns() {
+        let cell = &row[Column(col)];
+        if !cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
+            text.push(cell.c);
+            text.extend(cell.zerowidth().unwrap_or_default());
+        }
+    }
+    text
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Size {
     pub cols: u16,
@@ -160,6 +180,7 @@ pub struct Listener {
     pub sidebar_dirty: Arc<AtomicBool>,
     pub shell: Arc<Mutex<ShellUpdates>>,
     last_title: Arc<Mutex<Option<String>>>,
+    session_switch: Arc<session_switch::SessionSwitch>,
     wake: Waker,
 }
 impl Listener {
@@ -511,6 +532,7 @@ impl Session {
             sidebar_dirty: Arc::new(AtomicBool::new(false)),
             shell: Default::default(),
             last_title: Default::default(),
+            session_switch: Default::default(),
             wake,
         };
         let config = Config {
@@ -560,6 +582,7 @@ impl Session {
                                  idle_sent: &mut bool,
                                  osc7501: bool,
                                  tui_seen: &mut bool| {
+                read_events.session_switch.frame(term, agent);
                 let value = screen_state(term, agent);
                 if *last != value {
                     *last = value;
@@ -1125,12 +1148,21 @@ impl Session {
             return;
         }
         let mut term = self.term.lock().unwrap();
+        self.listener.session_switch.input(&term, &data);
         if term.grid().display_offset() != 0 {
             term.scroll_display(Scroll::Bottom);
             self.listener.refresh();
         }
         drop(term);
         let _ = self.listener.input.send(Input::Data(data));
+    }
+    pub fn watch_codex(&self, target: Option<(mpsc::Sender<crate::history::Command>, String)>) {
+        self.listener
+            .session_switch
+            .watch(target.map(|(send, run)| (send, self.id.marker(), run)));
+    }
+    pub fn awaiting_codex_identity(&self, pending: bool) {
+        self.listener.session_switch.awaiting_identity(pending);
     }
     pub fn focus_event(&self, focused: bool) {
         if self
@@ -1189,36 +1221,17 @@ impl Session {
     }
     /// Extract plain text from the bottom `max_lines` of non-empty terminal content (no ANSI escapes).
     pub fn screen_snapshot(&self, max_lines: usize) -> String {
-        use alacritty_terminal::term::cell::Flags;
         let term = self.term.lock().unwrap();
         let grid = term.grid();
         let screen_lines = grid.screen_lines() as i32;
         let history_lines = grid.history_size() as i32;
-        let cols = grid.columns();
         let want = max_lines.clamp(5, 80);
         // Always include the entire visible viewport plus up to `want` lines of scrollback,
         // then trim trailing blank rows below the cursor before taking the bottom `want` lines.
         let top = -(history_lines.min(want as i32));
         let mut lines: Vec<String> = Vec::with_capacity((screen_lines - top).max(0) as usize);
         for row_idx in top..screen_lines {
-            let row = &grid[Line(row_idx)];
-            let mut buf = String::with_capacity(cols);
-            for col_idx in 0..cols {
-                let cell = &row[Column(col_idx)];
-                if cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    continue;
-                }
-                buf.push(cell.c);
-                if let Some(extra) = cell.zerowidth() {
-                    for &ch in extra {
-                        buf.push(ch);
-                    }
-                }
-            }
-            lines.push(buf.trim_end().to_owned());
+            lines.push(row_text(&term, Line(row_idx), 0).trim_end().to_owned());
         }
         while lines.last().is_some_and(String::is_empty) {
             lines.pop();

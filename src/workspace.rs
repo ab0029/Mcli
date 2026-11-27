@@ -946,6 +946,14 @@ impl Workspace {
                         _ => crate::history::Command::Leave(tab.id.marker()),
                     };
                     let _ = service.send.send(cmd);
+                    if let Some(session) = &tab.session {
+                        session.watch_codex(
+                            tab.run
+                                .as_ref()
+                                .filter(|_| tab.foreground == Some(shell::Foreground::Codex))
+                                .map(|run| (service.send.clone(), run.clone())),
+                        );
+                    }
                 }
             }
             let had_agy_events = !tab.agy_events.is_empty();
