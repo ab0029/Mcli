@@ -51,7 +51,7 @@ impl SessionSwitch {
             marker,
             run,
             submitted: None,
-            awaiting_prompt: false,
+            awaiting_prompt: true,
             slash: String::new(),
             paste: None,
         });

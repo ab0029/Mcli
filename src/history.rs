@@ -266,7 +266,6 @@ struct Running {
     displayed: Option<Key>,
     codex_prefix: Option<String>,
     retired: HashSet<Key>,
-    fresh: bool,
     prompt_witness: Option<(i64, crate::terminal::PromptWitness)>,
     path: Option<PathBuf>,
     changed_at: u64,
@@ -344,7 +343,6 @@ impl Running {
             displayed: None,
             codex_prefix: None,
             retired: HashSet::new(),
-            fresh: false,
             prompt_witness: None,
             path: None,
             changed_at: 0,
@@ -437,7 +435,6 @@ impl Running {
         }
         self.retired.extend(self.initial.take());
         self.retired.extend(self.restore.take());
-        self.fresh = true;
         self.prompt_witness = None;
         self.codex_prefix = None;
         self.displayed = None;
@@ -518,7 +515,6 @@ impl Running {
                 self.restore = None;
             }
             self.retired.remove(&key);
-            self.fresh = false;
             self.prompt_witness = None;
             self.path = None;
             self.signature = None;
@@ -984,7 +980,9 @@ impl Worker<'_> {
             Command::SubmittedPrompt(marker, run, sent_ms, witness) => {
                 if let Some(slot) = self.live.get_mut(&marker)
                     && slot.run == run
-                    && slot.fresh
+                    && slot.agent == "codex"
+                    && slot.bound.is_none()
+                    && sent_ms >= slot.started_ms
                 {
                     slot.prompt_witness = Some((sent_ms, witness));
                     slot.next_probe = Instant::now();
@@ -1132,7 +1130,8 @@ impl Worker<'_> {
 
     // Bind unbound live CLIs passively without rewriting user command lines:
     // 1) App-restored tabs bind once the interactive TUI renders (or its official log updates).
-    // 2) Fresh Codex/agy launches match newly created or updated official logs.
+    // 2) Codex without a known ID requires a submission from this terminal.
+    // 3) Other new launches match official logs using provider-specific evidence.
     fn probe_unbound_slots(&mut self) -> bool {
         const PROBE_INTERVAL: Duration = Duration::from_secs(1);
         let mut dirty = false;
@@ -1248,68 +1247,56 @@ fn probe_codex(
     store: &mut Store,
     dirty: &mut bool,
 ) -> Option<(Key, Option<PathBuf>)> {
-    let witness = if slot.fresh {
-        Some(slot.prompt_witness.as_ref()?)
-    } else {
-        None
-    };
-    let min_new = if witness.is_some() {
-        slot.started_sys
-    } else {
-        slot.started_sys
-            .checked_sub(Duration::from_secs(2))
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    };
+    let (sent_ms, witness) = slot.prompt_witness.as_ref()?;
     let dirs = store.codex_recent_dirs().unwrap_or_default();
     let known = store
         .recent_sources("codex", &slot.project, 12)
         .unwrap_or_default();
-    let mut best: Option<(SystemTime, Key, PathBuf)> = None;
+    let mut matched: Option<(Key, Option<PathBuf>)> = None;
     let mut ambiguous = false;
     let mut seen = HashSet::new();
-    let mut consider = |key: Key, path: PathBuf, indexed: bool| {
+    let mut consider = |key: Key, path: PathBuf| {
         if claimed.contains(&key) || slot.retired.contains(&key) || !seen.insert(path.clone()) {
             return;
         }
         let Ok(meta) = path.metadata() else { return };
-        let Ok(mtime) = meta.modified() else { return };
-        let cutoff = if indexed { slot.started_sys } else { min_new };
-        if mtime < cutoff {
-            return;
-        }
-        if witness.is_some() && !meta.created().is_ok_and(|created| created >= min_new) {
+        if !meta
+            .modified()
+            .is_ok_and(|modified| modified >= slot.started_sys)
+            || !meta
+                .created()
+                .is_ok_and(|created| created >= slot.started_sys)
+        {
             return;
         }
         let Ok(path) = roots.path(&key, &path) else {
             return;
         };
-        if (!indexed || witness.is_some())
-            && !crate::discovery::codex_header(&path, &key)
-                .is_some_and(|cwd| same_project(&cwd, &slot.project))
+        if !crate::discovery::codex_header(&path, &key)
+            .is_some_and(|cwd| same_project(&cwd, &slot.project))
         {
             return;
         }
-        if let Some((sent_ms, witness)) = witness {
-            // Reuse the incremental index. A long rollout or a partial final
-            // JSON line is retried from the last committed offset.
-            let Ok(updated) = store.sync(&key, &slot.project, &path) else {
-                return;
-            };
-            *dirty |= updated;
-            if !store
-                .get(&key)
-                .ok()
-                .flatten()
-                .filter(|s| s.last_prompt_ms.is_some_and(|ms| ms >= sent_ms - 1000))
-                .and_then(|s| store.text(&key, s.count).ok())
-                .is_some_and(|text| witness.matches(&text))
-            {
-                return;
-            }
-            ambiguous |= best.as_ref().is_some_and(|(_, found, _)| found != &key);
+        // Reuse the incremental index. A long rollout or a partial final
+        // JSON line is retried from the last committed offset.
+        let Ok(updated) = store.sync(&key, &slot.project, &path) else {
+            return;
+        };
+        *dirty |= updated;
+        if !store
+            .get(&key)
+            .ok()
+            .flatten()
+            .filter(|s| s.last_prompt_ms.is_some_and(|ms| ms >= sent_ms - 1000))
+            .and_then(|s| store.text(&key, s.count).ok())
+            .is_some_and(|text| witness.matches(&text))
+        {
+            return;
         }
-        if best.as_ref().is_none_or(|(t, _, _)| mtime > *t) {
-            best = Some((mtime, key, path));
+        if let Some((found, _)) = &matched {
+            ambiguous |= found != &key;
+        } else {
+            matched = Some((key, Some(path)));
         }
     };
     for dir in dirs {
@@ -1319,18 +1306,14 @@ fn probe_codex(
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(key) = crate::discovery::rollout_key(&path) {
-                consider(key, path, false);
+                consider(key, path);
             }
         }
     }
     for (key, path) in known {
-        consider(key, path, true);
+        consider(key, path);
     }
-    if ambiguous {
-        None
-    } else {
-        best.map(|(_, key, path)| (key, Some(path)))
-    }
+    if ambiguous { None } else { matched }
 }
 
 fn probe_agy(

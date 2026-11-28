@@ -538,6 +538,92 @@ fn passive_binding_covers_explicit_resume_and_fresh_codex_and_agy_sessions() {
 }
 
 #[test]
+fn new_codex_terminals_only_bind_their_own_prompts() {
+    let (dir, roots, db) = fixture("codex-first-prompt-ownership");
+    let store = crate::conversation_store::Store::open(&db, roots.clone()).unwrap();
+    let partition = store.codex_recent_dirs().unwrap().remove(0);
+    std::fs::create_dir_all(&partition).unwrap();
+    let time = rusqlite::Connection::open_in_memory().unwrap();
+    let write_thread = |key: &Conversation, body: &str| {
+        let path = partition.join(format!("rollout-test-{}.jsonl", key.id));
+        put(
+            &path,
+            json!({"type":"session_meta","payload":{"id":key.id,"cwd":dir,"source":"vscode","originator":"codex-tui"}}),
+        );
+        let stamp: String = time
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        put(&path, prompt(key, 0, body, Some(&stamp)));
+    };
+
+    let exe = dir.join("codex.ps1");
+    std::fs::write(
+        &exe,
+        r#"
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Write("OpenAI Codex (v0.172.0)`r`n› ")
+while ($null -ne [Console]::ReadLine()) { [Console]::Write('› ') }
+"#,
+    )
+    .unwrap();
+    let mut rt = app().headless_runtime((1120., 720.), rune::Env::new(true, 1.));
+    rt.update(|w, _| {
+        w.first_open = false;
+        w.history.service = Some(Service::start(db, roots, w.wake.clone()));
+    });
+    let clock = Instant::now();
+    let launch = |rt: &mut rune::Runtime<Workspace>| {
+        let id = super::multiple::launch_profile_shell(rt, &dir);
+        shell_line(rt, &format!("& {}", shell_quote(&exe)));
+        wait_for_workspace(rt, clock, |w| {
+            w.current().unwrap().foreground == Some(shell::Foreground::Codex)
+                && frame(w.session().unwrap()).lines().any(|row| row == "›")
+        });
+        id
+    };
+    let first = launch(&mut rt);
+    write_thread(&key("codex", 46), "同目录的外部提问");
+    let written = Instant::now();
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().bound.is_some() || written.elapsed() >= Duration::from_millis(1800)
+    });
+    assert!(rt.state.current().unwrap().bound.is_none());
+
+    let second = launch(&mut rt);
+    let submit = |rt: &mut rune::Runtime<Workspace>, body: &str| {
+        rt.state.session().unwrap().input(body.as_bytes());
+        wait_for_workspace(rt, clock, |w| {
+            frame(w.session().unwrap()).contains(&format!("› {body}"))
+        });
+        rt.state.session().unwrap().input(b"\r");
+    };
+    let second_key = key("codex", 47);
+    submit(&mut rt, "下方的新提问");
+    write_thread(&second_key, "下方的新提问");
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().bound.as_ref() == Some(&second_key)
+            && w.current().unwrap().preview == "下方的新提问"
+    });
+    let first_tab = rt.state.tabs.iter().find(|t| t.id == first).unwrap();
+    assert!(first_tab.bound.is_none());
+    assert!(first_tab.preview.is_empty());
+
+    let first_key = key("codex", 48);
+    rt.update(|w, tx| w.select(Some(first), tx));
+    submit(&mut rt, "上方自己的提问");
+    write_thread(&first_key, "上方自己的提问");
+    wait_for_workspace(&mut rt, clock, |w| {
+        w.current().unwrap().bound.as_ref() == Some(&first_key)
+            && w.current().unwrap().preview == "上方自己的提问"
+    });
+    let second_tab = rt.state.tabs.iter().find(|t| t.id == second).unwrap();
+    assert_eq!(second_tab.bound.as_ref(), Some(&second_key));
+    assert_eq!(second_tab.preview, "下方的新提问");
+}
+
+#[test]
 fn codex_clear_switches_tree_and_open_drawer_without_an_id_in_the_title() {
     let (dir, roots, db) = fixture("codex-clear");
     let partition = crate::conversation_store::Store::open(&db, roots.clone())
